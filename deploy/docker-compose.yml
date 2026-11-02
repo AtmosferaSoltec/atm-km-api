@@ -1,0 +1,55 @@
+# Production stack of the KM API, in /opt/km-api on the server. The real .env
+# lives only there (/opt/km-api/.env).
+#
+# No database here: PostgreSQL is its own stack (`atm-postgres`), reachable
+# through the external `atm-network`. In DATABASE_URL the host is the container
+# name, not localhost.
+
+networks:
+  shared:
+    name: atm-network
+    external: true
+
+volumes:
+  # Odometer photos. The API deletes them after PHOTO_RETENTION_DAYS (90).
+  photos:
+    name: km-photos
+
+services:
+  # Applies pending migrations and exits. `app` does not start until this ends
+  # well, so a broken migration stops the deploy.
+  migrate:
+    image: ghcr.io/atmosferasoltec/atm-km-api:${IMAGE_TAG:-latest}
+    command: ["migrate"]
+    env_file: .env
+    networks:
+      - shared
+    restart: "no"
+
+  app:
+    image: ghcr.io/atmosferasoltec/atm-km-api:${IMAGE_TAG:-latest}
+    container_name: km-api
+    env_file: .env
+    environment:
+      APP_ENV: production
+      PORT: "3001"
+      PHOTOS_DIR: /app/data/photos
+    volumes:
+      - photos:/app/data/photos
+    # Loopback only: nginx publishes it.
+    ports:
+      - "127.0.0.1:3081:3001"
+    networks:
+      - shared
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "/app/api", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 512m

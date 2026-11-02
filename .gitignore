@@ -1,0 +1,16 @@
+.env
+*.local
+/bin/
+/dist/
+/data/
+.DS_Store
+/api
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.crt
+*.log
+.idea/
+.vscode/
