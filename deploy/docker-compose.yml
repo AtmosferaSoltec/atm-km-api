@@ -38,7 +38,7 @@ services:
       - photos:/app/data/photos
     # Loopback only: nginx publishes it.
     ports:
-      - "127.0.0.1:3081:3001"
+      - "127.0.0.1:3151:3001"
     networks:
       - shared
     depends_on:

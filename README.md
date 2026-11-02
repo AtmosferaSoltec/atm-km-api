@@ -89,6 +89,6 @@ generan con sqlc (`scripts/sqlc-only.sh`); las migraciones (goose) están en
 
 ## Despliegue
 
-`Dockerfile` + `deploy/docker-compose.yml` (puerto `127.0.0.1:3081`, volumen
+`Dockerfile` + `deploy/docker-compose.yml` (puerto `127.0.0.1:3151`, volumen
 `km-photos` en `/app/data/photos`). El servicio `migrate` del compose
 aplica las migraciones antes de arrancar la API.

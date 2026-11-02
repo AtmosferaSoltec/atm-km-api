@@ -1,0 +1,154 @@
+name: Deploy
+
+on:
+  push:
+    branches: [production]
+  # Lets you rerun a deploy (or go back to an older one) without pushing a commit.
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-km-api
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/atmosferasoltec/atm-km-api
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    # A real PostgreSQL, so the integration tests run here too instead of being skipped.
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: km_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgres://postgres:test@localhost:5432/km_test?sslmode=disable&search_path=km
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # The tests expect the `km` schema (the same one provision-db.sql creates).
+      - run: |
+          PGPASSWORD=test psql -h localhost -U postgres -d km_test -c 'CREATE SCHEMA IF NOT EXISTS km'
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      - run: go vet ./...
+      - uses: golangci/golangci-lint-action@v8
+        with:
+          version: latest
+      - run: go test -race ./...
+      - run: go build ./...
+
+  build:
+    needs: check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:latest
+            ${{ env.IMAGE }}:sha-${{ github.sha }}
+          cache-from: type=gha,scope=km-api
+          cache-to: type=gha,scope=km-api,mode=max
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: deploy/docker-compose.yml
+          sparse-checkout-cone-mode: false
+
+      # One SSH connection (ControlMaster) to copy the compose file and deploy, with
+      # retries when opening it: if sshd or fail2ban cut a stray handshake, the
+      # deploy does not fail because of it.
+      - name: Copy compose file and deploy on server
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_KEY: ${{ secrets.SSH_KEY }}
+          IMAGE_TAG: sha-${{ github.sha }}
+          IMAGE_REPO: ${{ env.IMAGE }}
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          opts=(-i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20
+            -o ServerAliveInterval=15 -o ControlMaster=auto -o ControlPath=~/.ssh/cm-%C -o ControlPersist=120)
+          target="$SSH_USER@$SSH_HOST"
+
+          for attempt in 1 2 3 4 5; do
+            if ssh "${opts[@]}" "$target" true; then break; fi
+            if [ "$attempt" = 5 ]; then echo "::error::No se pudo abrir la conexion SSH tras 5 intentos"; exit 1; fi
+            echo "SSH fallo (intento $attempt); reintento en $((attempt * 10)) s"
+            sleep $((attempt * 10))
+          done
+
+          scp "${opts[@]}" deploy/docker-compose.yml "$target:/opt/km-api/docker-compose.yml"
+
+          # The GHCR login lives on the server (~/.docker/config.json). If the pull
+          # says `denied`, renew it with `docker login ghcr.io` on the VPS.
+          ssh "${opts[@]}" "$target" "IMAGE_TAG=$IMAGE_TAG IMAGE_REPO=$IMAGE_REPO bash -s" <<'REMOTE'
+          set -e
+          cd /opt/km-api
+
+          if [ ! -f .env ]; then
+            echo "::error::Falta /opt/km-api/.env en el servidor"
+            exit 1
+          fi
+
+          export IMAGE_TAG IMAGE_REPO
+          docker compose pull
+          docker compose up -d
+          # Cleanup is optional: another project's deploy may be pruning at the same
+          # time, which must not fail this one.
+          # Remove this project's previous images (no rollback copies are kept). `docker rmi`
+          # refuses an image a container still uses; cleanup must never fail the deploy.
+          for repo in "$IMAGE_REPO"; do
+            docker images "$repo" --format '{{.Repository}}:{{.Tag}}' \
+              | grep -v ":${IMAGE_TAG}$" | xargs -r docker rmi || true
+          done
+          docker image prune -f || true
+
+          for _ in $(seq 1 60); do
+            status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' km-api 2>/dev/null || echo missing)"
+            if [ "$status" = "healthy" ]; then
+              echo "km-api esta healthy (${IMAGE_TAG})."
+              exit 0
+            fi
+            sleep 2
+          done
+
+          echo "::error::km-api no quedo healthy en 120s (estado: ${status}). Ultimos logs:"
+          docker compose logs --tail 50 app migrate
+          exit 1
+          REMOTE
