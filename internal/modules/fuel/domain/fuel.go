@@ -33,6 +33,8 @@ func ParseFuelType(text string) (FuelType, bool) {
 var (
 	maxKm     = decimal.NewFromInt(99_999_999)
 	maxAmount = decimal.NewFromInt(10_000)
+	// No station charges a hundred soles for a gallon; NUMERIC(8,2) holds far more.
+	maxPricePerGallon = decimal.NewFromInt(100)
 )
 
 // ErrNotFound: the user has no such log.
@@ -40,14 +42,16 @@ var ErrNotFound = errors.New("fuel log not found")
 
 // Log is one fill-up.
 type Log struct {
-	ID        uuid.UUID
-	UserID    uuid.UUID
-	Date      time.Time
-	Odometer  decimal.Decimal
-	FuelType  FuelType
-	Amount    decimal.Decimal
-	IsFull    bool
-	CreatedAt time.Time
+	ID       uuid.UUID
+	UserID   uuid.UUID
+	Date     time.Time
+	Odometer decimal.Decimal
+	FuelType FuelType
+	Amount   decimal.Decimal
+	IsFull   bool
+	// PricePerGallon is what the station charged, if the owner noted it.
+	PricePerGallon *decimal.Decimal
+	CreatedAt      time.Time
 }
 
 // Field codes the clients know how to show.
@@ -108,6 +112,18 @@ func ValidateAmount(amount decimal.Decimal, problems *ValidationError) {
 		problems.Add("amount", CodeTooLarge)
 	case !amount.Equal(amount.Round(2)):
 		problems.Add("amount", CodeTooPrecise)
+	}
+}
+
+// ValidatePricePerGallon checks the optional price per gallon: more than zero, in cents.
+func ValidatePricePerGallon(price decimal.Decimal, problems *ValidationError) {
+	switch {
+	case !price.IsPositive():
+		problems.Add("price_per_gallon", CodeNotPositive)
+	case price.GreaterThan(maxPricePerGallon):
+		problems.Add("price_per_gallon", CodeTooLarge)
+	case !price.Equal(price.Round(2)):
+		problems.Add("price_per_gallon", CodeTooPrecise)
 	}
 }
 

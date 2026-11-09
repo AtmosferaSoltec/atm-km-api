@@ -69,6 +69,7 @@ sql:
     schema:
       - migrations/00001_identity_create_users_and_sessions.sql
       - migrations/00003_trips_create_trips_and_photos.sql
+      - migrations/00006_trips_create_vouchers.sql
     queries: ../internal/modules/trips/adapters/postgres/queries.sql
     gen:
       go:
@@ -81,6 +82,7 @@ sql:
     schema:
       - migrations/00001_identity_create_users_and_sessions.sql
       - migrations/00004_fuel_create_fuel_logs.sql
+      - migrations/00005_fuel_add_price_per_gallon.sql
     queries: ../internal/modules/fuel/adapters/postgres/queries.sql
     gen:
       go:

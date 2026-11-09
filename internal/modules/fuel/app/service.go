@@ -64,6 +64,8 @@ type AddInput struct {
 	FuelType string
 	Amount   *decimal.Decimal
 	IsFull   bool
+	// PricePerGallon is optional.
+	PricePerGallon *decimal.Decimal
 }
 
 // Add registers a fill-up.
@@ -96,6 +98,10 @@ func (s *Service) Add(ctx context.Context, userID uuid.UUID, in AddInput) (domai
 	} else {
 		log.Amount = *in.Amount
 		domain.ValidateAmount(log.Amount, &problems)
+	}
+	if in.PricePerGallon != nil {
+		log.PricePerGallon = in.PricePerGallon
+		domain.ValidatePricePerGallon(*in.PricePerGallon, &problems)
 	}
 	if err := problems.OrNil(); err != nil {
 		return domain.Log{}, err

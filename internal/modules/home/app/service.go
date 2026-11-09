@@ -30,6 +30,7 @@ type Trips interface {
 	BillableSince(ctx context.Context, userID uuid.UUID, since time.Time) (trips.Totals, error)
 	MaxOdometer(ctx context.Context, userID uuid.UUID) (decimal.Decimal, error)
 	LastFuelType(ctx context.Context, userID uuid.UUID) (*trips.FuelType, error)
+	OpenVouchers(ctx context.Context, userID uuid.UUID) ([]trips.Voucher, error)
 }
 
 // Fuel is what home reads from the fuel module.
@@ -43,6 +44,9 @@ type Home struct {
 	OpenTrip     *trips.Trip
 	Pending      []trips.Trip
 	PendingTotal decimal.Decimal
+	// Vouchers are what the borrower paid for fuel and is not yet discounted: credit.
+	Vouchers     []trips.Voucher
+	VoucherTotal decimal.Decimal
 	Since        time.Time
 	Recent       trips.Totals
 	FuelSpent    decimal.Decimal
@@ -78,6 +82,12 @@ func (s *Service) Get(ctx context.Context, userID uuid.UUID) (Home, error) {
 	for _, trip := range home.Pending {
 		home.PendingTotal = home.PendingTotal.Add(trip.Total())
 	}
+	if home.Vouchers, err = s.trips.OpenVouchers(ctx, userID); err != nil {
+		return Home{}, err
+	}
+	for _, voucher := range home.Vouchers {
+		home.VoucherTotal = home.VoucherTotal.Add(voucher.Amount)
+	}
 	if home.Recent, err = s.trips.BillableSince(ctx, userID, since); err != nil {
 		return Home{}, err
 	}
@@ -88,15 +98,9 @@ func (s *Service) Get(ctx context.Context, userID uuid.UUID) (Home, error) {
 	if home.RecentTrips, err = s.trips.ByStatus(ctx, userID, closed, recentTrips); err != nil {
 		return Home{}, err
 	}
-	tripKm, err := s.trips.MaxOdometer(ctx, userID)
-	if err != nil {
+	if home.LastOdometer, err = s.lastOdometer(ctx, userID); err != nil {
 		return Home{}, err
 	}
-	fuelKm, err := s.fuel.MaxOdometer(ctx, userID)
-	if err != nil {
-		return Home{}, err
-	}
-	home.LastOdometer = decimal.Max(tripKm, fuelKm)
 	if home.LastFuelType, err = s.trips.LastFuelType(ctx, userID); err != nil {
 		return Home{}, err
 	}

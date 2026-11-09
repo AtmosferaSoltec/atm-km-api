@@ -21,6 +21,7 @@ const MaxPayAtOnce = 200
 type Deps struct {
 	Trips    Repository
 	Photos   Photos
+	Vouchers Vouchers
 	Files    Files
 	Rates    RatesProvider
 	Tx       Transactor
@@ -162,15 +163,22 @@ func (s *Service) transition(ctx context.Context, userID, tripID uuid.UUID, from
 	return s.Get(ctx, userID, tripID)
 }
 
-// PayResult says how much was marked paid.
+// PayResult says what was marked paid and which vouchers were discounted.
 type PayResult struct {
-	TripIDs []uuid.UUID
-	Total   decimal.Decimal
+	TripIDs      []uuid.UUID
+	Total        decimal.Decimal
+	VoucherIDs   []uuid.UUID
+	VoucherTotal decimal.Decimal
 }
 
-// PayMany marks several pending trips paid ("Ya me pagó todo"). Trips that are
-// no longer pending are skipped: paying twice is harmless.
-func (s *Service) PayMany(ctx context.Context, userID uuid.UUID, tripIDs []uuid.UUID) (PayResult, error) {
+// Net is what the borrower hands over: the trips minus the vouchers.
+func (r PayResult) Net() decimal.Decimal { return domain.Balance(r.Total, r.VoucherTotal) }
+
+// PayMany marks several pending trips paid ("Ya me pagó") and discounts the
+// vouchers that went with the payment, all together or not at all. Trips that
+// are no longer pending and vouchers already settled are skipped: paying twice
+// is harmless. The vouchers cannot be worth more than the trips paid.
+func (s *Service) PayMany(ctx context.Context, userID uuid.UUID, tripIDs, voucherIDs []uuid.UUID) (PayResult, error) {
 	var problems domain.ValidationError
 	switch {
 	case len(tripIDs) == 0:
@@ -178,22 +186,47 @@ func (s *Service) PayMany(ctx context.Context, userID uuid.UUID, tripIDs []uuid.
 	case len(tripIDs) > MaxPayAtOnce:
 		problems.Add("trip_ids", domain.CodeTooMany)
 	}
+	if len(voucherIDs) > MaxVouchers {
+		problems.Add("voucher_ids", domain.CodeTooMany)
+	}
 	if err := problems.OrNil(); err != nil {
 		return PayResult{}, err
 	}
-	paid, err := s.deps.Trips.Pay(ctx, userID, tripIDs, s.today())
+	var result PayResult
+	err := s.deps.Tx.InTx(ctx, func(ctx context.Context) error {
+		today := s.today()
+		paid, err := s.deps.Trips.Pay(ctx, userID, tripIDs, today)
+		if err != nil {
+			return err
+		}
+		result = PayResult{TripIDs: paid}
+		for _, id := range paid {
+			trip, err := s.deps.Trips.Get(ctx, userID, id)
+			if err != nil {
+				return err
+			}
+			result.Total = result.Total.Add(trip.Total())
+		}
+		if len(voucherIDs) == 0 {
+			return nil
+		}
+		settled, err := s.deps.Vouchers.Settle(ctx, userID, voucherIDs, today)
+		if err != nil {
+			return err
+		}
+		for _, voucher := range settled {
+			result.VoucherIDs = append(result.VoucherIDs, voucher.ID)
+			result.VoucherTotal = result.VoucherTotal.Add(voucher.Amount)
+		}
+		if result.VoucherTotal.GreaterThan(result.Total) {
+			return domain.ErrVouchersExceed // rolls everything back
+		}
+		return nil
+	})
 	if err != nil {
 		return PayResult{}, err
 	}
-	total := decimal.Zero
-	for _, id := range paid {
-		trip, err := s.deps.Trips.Get(ctx, userID, id)
-		if err != nil {
-			return PayResult{}, err
-		}
-		total = total.Add(trip.Total())
-	}
-	return PayResult{TripIDs: paid, Total: total}, nil
+	return result, nil
 }
 
 // Delete removes a cancelled trip and its photos from the history.

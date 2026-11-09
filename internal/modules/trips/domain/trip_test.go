@@ -80,3 +80,20 @@ func TestParsers(t *testing.T) {
 	_, ok = ParseFuelType("DIESEL")
 	assert.False(t, ok)
 }
+
+func TestValidateVoucherAmountAndBalance(t *testing.T) {
+	var problems ValidationError
+	ValidateVoucherAmount(decimal.RequireFromString("0"), &problems)
+	ValidateVoucherAmount(decimal.RequireFromString("10001"), &problems)
+	ValidateVoucherAmount(decimal.RequireFromString("50.005"), &problems)
+	ValidateVoucherAmount(decimal.RequireFromString("50.00"), &problems)
+	assert.Equal(t, []FieldError{
+		{"amount", CodeNotPositive},
+		{"amount", CodeTooLarge},
+		{"amount", CodeTooPrecise},
+	}, problems.Fields)
+
+	// 273 owed, vouchers of 50 + 60 + 70: 93 is left; more vouchers than trips goes negative.
+	assert.Equal(t, "93", Balance(decimal.NewFromInt(273), decimal.NewFromInt(180)).String())
+	assert.Equal(t, "-10", Balance(decimal.NewFromInt(30), decimal.NewFromInt(40)).String())
+}

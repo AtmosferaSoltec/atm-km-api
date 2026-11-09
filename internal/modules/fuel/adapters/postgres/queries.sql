@@ -1,6 +1,6 @@
 -- name: InsertFuelLog :exec
-INSERT INTO fuel_logs (id, user_id, date, odometer, fuel_type, amount, is_full, created_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
+INSERT INTO fuel_logs (id, user_id, date, odometer, fuel_type, amount, is_full, price_per_gallon, created_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9);
 
 -- name: DeleteFuelLog :execrows
 DELETE FROM fuel_logs WHERE id = $1 AND user_id = $2;

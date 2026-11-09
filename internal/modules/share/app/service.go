@@ -35,6 +35,7 @@ type Owners interface {
 // Trips reads the owner's trips.
 type Trips interface {
 	ByStatus(ctx context.Context, userID uuid.UUID, statuses []trips.Status, limit int) ([]trips.Trip, error)
+	OpenVouchers(ctx context.Context, userID uuid.UUID) ([]trips.Voucher, error)
 }
 
 // Page is what the borrower sees.
@@ -44,6 +45,9 @@ type Page struct {
 	BorrowerName string
 	Pending      []trips.Trip
 	PendingTotal decimal.Decimal
+	// Vouchers are the fuel the borrower already paid for: credit not yet discounted.
+	Vouchers     []trips.Voucher
+	VoucherTotal decimal.Decimal
 	History      []trips.Trip
 }
 
@@ -78,6 +82,12 @@ func (s *Service) Get(ctx context.Context, token uuid.UUID) (Page, error) {
 	}
 	for _, trip := range page.Pending {
 		page.PendingTotal = page.PendingTotal.Add(trip.Total())
+	}
+	if page.Vouchers, err = s.trips.OpenVouchers(ctx, owner.UserID); err != nil {
+		return Page{}, err
+	}
+	for _, voucher := range page.Vouchers {
+		page.VoucherTotal = page.VoucherTotal.Add(voucher.Amount)
 	}
 	billable := []trips.Status{trips.StatusPending, trips.StatusPaid}
 	if page.History, err = s.trips.ByStatus(ctx, owner.UserID, billable, maxHistory); err != nil {

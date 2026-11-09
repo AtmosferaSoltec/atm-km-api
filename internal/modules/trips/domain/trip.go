@@ -189,6 +189,7 @@ const (
 	CodeBeforeStart   = "BEFORE_START"
 	CodeNotAfterStart = "NOT_AFTER_START"
 	CodeTooPrecise    = "TOO_PRECISE"
+	CodeNotPositive   = "NOT_POSITIVE"
 	CodeTooMany       = "TOO_MANY"
 	CodeUnsupported   = "UNSUPPORTED_TYPE"
 	CodeEmpty         = "EMPTY"

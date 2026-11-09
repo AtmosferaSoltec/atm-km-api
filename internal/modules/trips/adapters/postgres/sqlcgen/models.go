@@ -71,3 +71,16 @@ type User struct {
 	UpdatedAt    time.Time
 	LastLoginAt  *time.Time
 }
+
+type Voucher struct {
+	ID               uuid.UUID
+	UserID           uuid.UUID
+	Date             time.Time
+	Amount           decimal.Decimal
+	SettledDate      *time.Time
+	PhotoKey         *string
+	PhotoContentType *string
+	PhotoSizeBytes   *int32
+	PhotoCreatedAt   *time.Time
+	CreatedAt        time.Time
+}

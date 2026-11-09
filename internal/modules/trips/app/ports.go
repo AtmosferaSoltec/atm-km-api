@@ -76,3 +76,25 @@ type RatesProvider interface {
 type Transactor interface {
 	InTx(ctx context.Context, fn func(ctx context.Context) error) error
 }
+
+// Vouchers stores the borrower's fuel vouchers. Every method but GetByID is
+// scoped to the user.
+type Vouchers interface {
+	Insert(ctx context.Context, voucher domain.Voucher) error
+	// Get, Lock and GetByID return domain.ErrVoucherNotFound.
+	Get(ctx context.Context, userID, id uuid.UUID) (domain.Voucher, error)
+	Lock(ctx context.Context, userID, id uuid.UUID) (domain.Voucher, error)
+	// GetByID is for serving a photo whose signed URL was already checked.
+	GetByID(ctx context.Context, id uuid.UUID) (domain.Voucher, error)
+	// List returns the settled or the unsettled vouchers, newest first.
+	List(ctx context.Context, userID uuid.UUID, settled bool, limit int) ([]domain.Voucher, error)
+	// SetPhoto stores the photo's metadata; nil clears it.
+	SetPhoto(ctx context.Context, userID, id uuid.UUID, photo *domain.VoucherPhoto) error
+	// Delete removes an unsettled voucher and returns domain.ErrVoucherNotFound if there is none.
+	Delete(ctx context.Context, userID, id uuid.UUID) error
+	// Settle marks the unsettled vouchers among ids and returns the ones it marked.
+	Settle(ctx context.Context, userID uuid.UUID, ids []uuid.UUID, date time.Time) ([]domain.Voucher, error)
+	// ExpiredPhotos returns vouchers whose photo is older than a moment.
+	ExpiredPhotos(ctx context.Context, before time.Time, limit int) ([]domain.Voucher, error)
+	ClearPhoto(ctx context.Context, id uuid.UUID) error
+}

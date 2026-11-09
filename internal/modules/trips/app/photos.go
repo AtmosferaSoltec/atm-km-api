@@ -24,17 +24,8 @@ const cleanupBatch = 200
 // SetPhoto stores (or replaces) a leg's odometer photo. The end photo needs the
 // car to be back; a cancelled trip takes no photos.
 func (s *Service) SetPhoto(ctx context.Context, userID, tripID uuid.UUID, leg domain.Leg, data []byte) (domain.Trip, error) {
-	var problems domain.ValidationError
-	image, ok := photostore.Detect(data)
-	switch {
-	case len(data) == 0:
-		problems.Add("photo", domain.CodeEmpty)
-	case len(data) > MaxPhotoBytes:
-		problems.Add("photo", domain.CodeTooLarge)
-	case !ok:
-		problems.Add("photo", domain.CodeUnsupported)
-	}
-	if err := problems.OrNil(); err != nil {
+	image, err := checkPhoto(data)
+	if err != nil {
 		return domain.Trip{}, err
 	}
 
@@ -85,6 +76,21 @@ func (s *Service) SetPhoto(ctx context.Context, userID, tripID uuid.UUID, leg do
 		s.deleteFile(ctx, replaced.StorageKey)
 	}
 	return s.Get(ctx, userID, tripID)
+}
+
+// checkPhoto validates an uploaded photo and says what kind of image it is.
+func checkPhoto(data []byte) (photostore.Image, error) {
+	var problems domain.ValidationError
+	image, ok := photostore.Detect(data)
+	switch {
+	case len(data) == 0:
+		problems.Add("photo", domain.CodeEmpty)
+	case len(data) > MaxPhotoBytes:
+		problems.Add("photo", domain.CodeTooLarge)
+	case !ok:
+		problems.Add("photo", domain.CodeUnsupported)
+	}
+	return image, problems.OrNil()
 }
 
 func photoAllowed(trip domain.Trip, leg domain.Leg) error {
@@ -167,6 +173,11 @@ func (s *Service) CleanupPhotos(ctx context.Context) (CleanupResult, error) {
 		if len(expired) < cleanupBatch {
 			break
 		}
+	}
+	vouchers, err := s.cleanupVoucherPhotos(ctx, cutoff)
+	result.Photos += vouchers
+	if err != nil {
+		return result, err
 	}
 	// A day of margin: a file being uploaded right now is never swept.
 	orphans, err := s.deps.Files.SweepOlderThan(cutoff.Add(-24 * time.Hour))

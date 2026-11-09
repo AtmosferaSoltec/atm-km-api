@@ -51,16 +51,20 @@ type addBody struct {
 	FuelType string           `json:"fuel_type"`
 	Amount   *decimal.Decimal `json:"amount"`
 	IsFull   bool             `json:"is_full"`
+	// Optional: what the station charged per gallon.
+	PricePerGallon *decimal.Decimal `json:"price_per_gallon"`
 }
 
 type logResponse struct {
-	ID        uuid.UUID   `json:"id"`
-	Date      string      `json:"date"`
-	Odometer  json.Number `json:"odometer"`
-	FuelType  string      `json:"fuel_type"`
-	Amount    string      `json:"amount"`
-	IsFull    bool        `json:"is_full"`
-	CreatedAt time.Time   `json:"created_at"`
+	ID       uuid.UUID   `json:"id"`
+	Date     string      `json:"date"`
+	Odometer json.Number `json:"odometer"`
+	FuelType string      `json:"fuel_type"`
+	Amount   string      `json:"amount"`
+	IsFull   bool        `json:"is_full"`
+	// Null when the owner did not note it.
+	PricePerGallon *string   `json:"price_per_gallon"`
+	CreatedAt      time.Time `json:"created_at"`
 }
 
 type monthResponse struct {
@@ -108,6 +112,7 @@ func (h *Handler) add(c *gin.Context) {
 	}
 	log, err := h.service.Add(c.Request.Context(), userID, app.AddInput{
 		Date: body.Date, Odometer: body.Odometer, FuelType: body.FuelType, Amount: body.Amount, IsFull: body.IsFull,
+		PricePerGallon: body.PricePerGallon,
 	})
 	if err != nil {
 		respondError(c, err)
@@ -202,6 +207,6 @@ func toLog(log domain.Log) logResponse {
 	return logResponse{
 		ID: log.ID, Date: dates.Format(log.Date), Odometer: json.Number(log.Odometer.String()),
 		FuelType: string(log.FuelType), Amount: money.Format(log.Amount), IsFull: log.IsFull,
-		CreatedAt: log.CreatedAt.UTC(),
+		PricePerGallon: money.FormatOptional(log.PricePerGallon), CreatedAt: log.CreatedAt.UTC(),
 	}
 }

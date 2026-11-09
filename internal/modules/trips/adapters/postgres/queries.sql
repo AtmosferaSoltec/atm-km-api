@@ -100,3 +100,44 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
 -- Photos past their retention, oldest first, a batch at a time.
 -- name: ExpiredPhotos :many
 SELECT * FROM trip_photos WHERE created_at < $1 ORDER BY created_at LIMIT $2;
+
+-- name: InsertVoucher :exec
+INSERT INTO vouchers (id, user_id, date, amount, created_at) VALUES ($1, $2, $3, $4, $5);
+
+-- name: GetVoucher :one
+SELECT * FROM vouchers WHERE id = $1 AND user_id = $2;
+
+-- Serves a photo to whoever holds its signed URL: the signature is the credential.
+-- name: GetVoucherByID :one
+SELECT * FROM vouchers WHERE id = $1;
+
+-- name: LockVoucher :one
+SELECT * FROM vouchers WHERE id = $1 AND user_id = $2 FOR UPDATE;
+
+-- name: ListVouchers :many
+SELECT * FROM vouchers
+WHERE user_id = sqlc.arg(user_id) AND (settled_date IS NOT NULL) = sqlc.arg(settled)::boolean
+ORDER BY date DESC, created_at DESC
+LIMIT sqlc.arg(row_limit);
+
+-- name: SetVoucherPhoto :exec
+UPDATE vouchers
+SET photo_key = $3, photo_content_type = $4, photo_size_bytes = $5, photo_created_at = $6
+WHERE id = $1 AND user_id = $2;
+
+-- name: ClearVoucherPhoto :exec
+UPDATE vouchers
+SET photo_key = NULL, photo_content_type = NULL, photo_size_bytes = NULL, photo_created_at = NULL
+WHERE id = $1;
+
+-- name: DeleteVoucher :execrows
+DELETE FROM vouchers WHERE id = $1 AND user_id = $2 AND settled_date IS NULL;
+
+-- name: SettleVouchers :many
+UPDATE vouchers SET settled_date = $2
+WHERE user_id = $1 AND settled_date IS NULL AND id = ANY(sqlc.arg(ids)::uuid[])
+RETURNING *;
+
+-- Photos past their retention, oldest first.
+-- name: ExpiredVoucherPhotos :many
+SELECT * FROM vouchers WHERE photo_key IS NOT NULL AND photo_created_at < $1 ORDER BY photo_created_at LIMIT $2;

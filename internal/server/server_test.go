@@ -370,6 +370,36 @@ func TestUsersOnlySeeTheirOwnData(t *testing.T) {
 	assert.Empty(t, e.do("GET", "/api/v1/fuel-logs", beto, nil).Body["data"])
 }
 
+func TestFuelLogPricePerGallonIsOptional(t *testing.T) {
+	e := newEnv(t)
+	access, _ := e.login(e.newUser("price"))
+	log := func(extra map[string]any) response {
+		body := map[string]any{"date": "2026-11-01", "odometer": 100, "fuel_type": "GASOLINE", "amount": "35"}
+		for k, v := range extra {
+			body[k] = v
+		}
+		return e.do("POST", "/api/v1/fuel-logs", access, body)
+	}
+
+	without := log(nil)
+	require.Equal(t, http.StatusCreated, without.Status)
+	assert.Nil(t, without.data()["price_per_gallon"])
+
+	with := log(map[string]any{"price_per_gallon": "5.80"})
+	require.Equal(t, http.StatusCreated, with.Status)
+	assert.Equal(t, "5.80", with.data()["price_per_gallon"])
+
+	assert.Equal(t, http.StatusBadRequest, log(map[string]any{"price_per_gallon": "0"}).Status)
+	assert.Equal(t, http.StatusBadRequest, log(map[string]any{"price_per_gallon": "5.805"}).Status)
+
+	listed := e.do("GET", "/api/v1/fuel-logs", access, nil).Body["data"].([]any)
+	prices := map[any]int{}
+	for _, row := range listed {
+		prices[row.(map[string]any)["price_per_gallon"]]++
+	}
+	assert.Equal(t, map[any]int{nil: 1, "5.80": 1}, prices)
+}
+
 func TestFuelSummary(t *testing.T) {
 	e := newEnv(t)
 	access, _ := e.login(e.newUser("fuel"))
@@ -446,6 +476,85 @@ func TestPhotosAreServedSignedAndDeletedAfterRetention(t *testing.T) {
 	assert.Equal(t, 0, countFiles(t, e.photoDir))
 	access, _ = e.login(username)
 	assert.Nil(t, e.do("GET", "/api/v1/trips/"+tripID, access, nil).data()["photos"].(map[string]any)["start"])
+}
+
+func TestVouchersAreDiscountedFromAPayment(t *testing.T) {
+	e := newEnv(t)
+	username := e.newUser("vouchers")
+	access, _ := e.login(username)
+	jpeg := append([]byte{0xFF, 0xD8, 0xFF, 0xE0}, bytes.Repeat([]byte("x"), 500)...)
+	lend := func(start, end int) string {
+		res := e.do("POST", "/api/v1/trips", access, map[string]any{
+			"start_date": "2026-11-01", "start_km": start,
+			"return": map[string]any{"return_date": "2026-11-01", "end_km": end, "fuel_type": "GASOLINE"},
+		})
+		require.Equal(t, http.StatusCreated, res.Status, string(res.Raw))
+		return res.data()["id"].(string)
+	}
+	voucher := func(amount string) response {
+		return e.do("POST", "/api/v1/vouchers", access, map[string]any{"date": "2026-11-01", "amount": amount})
+	}
+	tripA, tripB := lend(100, 150), lend(150, 200) // 30.00 each
+
+	assert.Equal(t, "VALIDATION_FAILED", voucher("0").errorCode())
+	v1 := voucher("20.00").data()["id"].(string)
+	v2 := voucher("15.00").data()["id"].(string)
+	uploaded := e.do("PUT", "/api/v1/vouchers/"+v1+"/photo", access, jpeg)
+	require.Equal(t, http.StatusOK, uploaded.Status, string(uploaded.Raw))
+	url := uploaded.data()["photo"].(map[string]any)["url"].(string)
+	served := e.do("GET", url, "", nil)
+	require.Equal(t, http.StatusOK, served.Status)
+	assert.Equal(t, jpeg, served.Raw)
+	assert.Equal(t, http.StatusNotFound, e.do("GET", strings.Replace(url, "sig=", "sig=x", 1), "", nil).Status)
+	assert.Equal(t, "VALIDATION_FAILED", e.do("PUT", "/api/v1/vouchers/"+v2+"/photo", access, []byte("nope")).errorCode())
+
+	// 60.00 owed, 35.00 already paid in fuel: 25.00 left, for the owner and for the borrower.
+	pending := e.do("GET", "/api/v1/home", access, nil).data()["pending"].(map[string]any)
+	assert.Equal(t, "60.00", pending["total_amount"])
+	assert.Equal(t, "35.00", pending["voucher_amount"])
+	assert.Equal(t, "25.00", pending["balance"])
+	assert.Len(t, pending["vouchers"], 2)
+	token := e.do("GET", "/api/v1/settings", access, nil).data()["share_token"].(string)
+	shared := e.do("GET", "/api/v1/share/"+token, "", nil).data()["pending"].(map[string]any)
+	assert.Equal(t, "25.00", shared["balance"])
+	assert.Len(t, shared["vouchers"], 2)
+
+	// Vouchers worth more than the trips paid: nothing changes.
+	exceed := e.do("POST", "/api/v1/trips/pay", access, map[string]any{"trip_ids": []string{tripA}, "voucher_ids": []string{v1, v2}})
+	assert.Equal(t, http.StatusConflict, exceed.Status)
+	assert.Equal(t, "VOUCHERS_EXCEED", exceed.errorCode())
+	assert.Equal(t, "PENDING", e.do("GET", "/api/v1/trips/"+tripA, access, nil).data()["status"])
+	assert.Len(t, e.do("GET", "/api/v1/vouchers", access, nil).Body["data"], 2)
+
+	paid := e.do("POST", "/api/v1/trips/pay", access, map[string]any{"trip_ids": []string{tripA, tripB}, "voucher_ids": []string{v1, v2}})
+	require.Equal(t, http.StatusOK, paid.Status, string(paid.Raw))
+	sum := paid.data()["summary"].(map[string]any)
+	assert.Equal(t, "60.00", sum["total_amount"])
+	assert.Equal(t, "35.00", sum["voucher_amount"])
+	assert.Equal(t, "25.00", sum["net_amount"])
+	assert.Empty(t, e.do("GET", "/api/v1/vouchers", access, nil).Body["data"])
+	assert.Len(t, e.do("GET", "/api/v1/vouchers?settled=true", access, nil).Body["data"], 2)
+
+	// A settled voucher is history: it cannot be deleted or change its photo.
+	assert.Equal(t, "VOUCHER_SETTLED", e.do("DELETE", "/api/v1/vouchers/"+v1, access, nil).errorCode())
+	assert.Equal(t, "VOUCHER_SETTLED", e.do("PUT", "/api/v1/vouchers/"+v1+"/photo", access, jpeg).errorCode())
+
+	// An unsettled voucher takes its photo with it when deleted.
+	v3 := voucher("10.00").data()["id"].(string)
+	e.do("PUT", "/api/v1/vouchers/"+v3+"/photo", access, jpeg)
+	assert.Equal(t, 2, countFiles(t, e.photoDir))
+	assert.Equal(t, http.StatusNoContent, e.do("DELETE", "/api/v1/vouchers/"+v3, access, nil).Status)
+	assert.Equal(t, 1, countFiles(t, e.photoDir))
+
+	// Photos are cleaned up after the retention; the voucher stays.
+	e.clock.Advance(91 * 24 * time.Hour)
+	_, err := e.app.Trips.CleanupPhotos(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 0, countFiles(t, e.photoDir))
+	access, _ = e.login(username)
+	for _, row := range e.do("GET", "/api/v1/vouchers?settled=true", access, nil).Body["data"].([]any) {
+		assert.Nil(t, row.(map[string]any)["photo"])
+	}
 }
 
 func TestShareLink(t *testing.T) {

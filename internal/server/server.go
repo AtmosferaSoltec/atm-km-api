@@ -54,7 +54,10 @@ func Build(cfg config.Config, pool *pgxpool.Pool, log *slog.Logger, opts Options
 		RateLimitPerMinute: cfg.RateLimitPerMinute,
 		// A photo travels as raw bytes, with a little room over its own limit so
 		// the use case (not the reader) explains what is wrong.
-		LargeBodyRoutes: map[string]int64{trips.PhotoUploadRoute: trips.MaxPhotoBytes + 1<<10},
+		LargeBodyRoutes: map[string]int64{
+			trips.PhotoUploadRoute:  trips.MaxPhotoBytes + 1<<10,
+			trips.VoucherPhotoRoute: trips.MaxPhotoBytes + 1<<10,
+		},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("router: %w", err)

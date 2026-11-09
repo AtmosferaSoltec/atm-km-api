@@ -299,3 +299,116 @@ func toPhoto(row sqlcgen.TripPhoto) domain.Photo {
 		SizeBytes: int64(row.SizeBytes), CreatedAt: row.CreatedAt,
 	}
 }
+
+// Vouchers implements app.Vouchers.
+type Vouchers struct {
+	db DB
+}
+
+// NewVouchers creates the vouchers repository.
+func NewVouchers(db DB) Vouchers { return Vouchers{db: db} }
+
+func (r Vouchers) q(ctx context.Context) *sqlcgen.Queries { return sqlcgen.New(r.db.DB(ctx)) }
+
+// Insert stores a voucher.
+func (r Vouchers) Insert(ctx context.Context, voucher domain.Voucher) error {
+	return r.q(ctx).InsertVoucher(ctx, sqlcgen.InsertVoucherParams{
+		ID: voucher.ID, UserID: voucher.UserID, Date: voucher.Date, Amount: voucher.Amount, CreatedAt: voucher.CreatedAt,
+	})
+}
+
+// Get finds one of the user's vouchers.
+func (r Vouchers) Get(ctx context.Context, userID, id uuid.UUID) (domain.Voucher, error) {
+	return oneVoucher(r.q(ctx).GetVoucher(ctx, sqlcgen.GetVoucherParams{ID: id, UserID: userID}))
+}
+
+// Lock finds one of the user's vouchers and locks it until the transaction ends.
+func (r Vouchers) Lock(ctx context.Context, userID, id uuid.UUID) (domain.Voucher, error) {
+	return oneVoucher(r.q(ctx).LockVoucher(ctx, sqlcgen.LockVoucherParams{ID: id, UserID: userID}))
+}
+
+// GetByID finds a voucher without knowing whose it is.
+func (r Vouchers) GetByID(ctx context.Context, id uuid.UUID) (domain.Voucher, error) {
+	return oneVoucher(r.q(ctx).GetVoucherByID(ctx, id))
+}
+
+// List returns the settled or the unsettled vouchers, newest first.
+func (r Vouchers) List(ctx context.Context, userID uuid.UUID, settled bool, limit int) ([]domain.Voucher, error) {
+	rows, err := r.q(ctx).ListVouchers(ctx, sqlcgen.ListVouchersParams{
+		UserID: userID, Settled: settled, RowLimit: int32(limit), //nolint:gosec // bounded by the caller
+	})
+	return manyVouchers(rows), err
+}
+
+// SetPhoto stores the photo's metadata, or clears it with nil.
+func (r Vouchers) SetPhoto(ctx context.Context, userID, id uuid.UUID, photo *domain.VoucherPhoto) error {
+	params := sqlcgen.SetVoucherPhotoParams{ID: id, UserID: userID}
+	if photo != nil {
+		size := int32(photo.SizeBytes) //nolint:gosec // capped at MaxPhotoBytes
+		params.PhotoKey, params.PhotoContentType = &photo.StorageKey, &photo.ContentType
+		params.PhotoSizeBytes, params.PhotoCreatedAt = &size, &photo.CreatedAt
+	}
+	return r.q(ctx).SetVoucherPhoto(ctx, params)
+}
+
+// ClearPhoto removes the photo's metadata.
+func (r Vouchers) ClearPhoto(ctx context.Context, id uuid.UUID) error {
+	return r.q(ctx).ClearVoucherPhoto(ctx, id)
+}
+
+// Delete removes an unsettled voucher.
+func (r Vouchers) Delete(ctx context.Context, userID, id uuid.UUID) error {
+	n, err := r.q(ctx).DeleteVoucher(ctx, sqlcgen.DeleteVoucherParams{ID: id, UserID: userID})
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return domain.ErrVoucherNotFound
+	}
+	return nil
+}
+
+// Settle marks the unsettled vouchers among ids as discounted on a date.
+func (r Vouchers) Settle(ctx context.Context, userID uuid.UUID, ids []uuid.UUID, date time.Time) ([]domain.Voucher, error) {
+	rows, err := r.q(ctx).SettleVouchers(ctx, sqlcgen.SettleVouchersParams{UserID: userID, SettledDate: &date, Ids: ids})
+	return manyVouchers(rows), err
+}
+
+// ExpiredPhotos returns vouchers whose photo is older than a moment.
+func (r Vouchers) ExpiredPhotos(ctx context.Context, before time.Time, limit int) ([]domain.Voucher, error) {
+	rows, err := r.q(ctx).ExpiredVoucherPhotos(ctx, sqlcgen.ExpiredVoucherPhotosParams{PhotoCreatedAt: &before, Limit: int32(limit)}) //nolint:gosec // small constant
+	return manyVouchers(rows), err
+}
+
+func oneVoucher(row sqlcgen.Voucher, err error) (domain.Voucher, error) {
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Voucher{}, domain.ErrVoucherNotFound
+	}
+	if err != nil {
+		return domain.Voucher{}, err
+	}
+	return toVoucher(row), nil
+}
+
+func manyVouchers(rows []sqlcgen.Voucher) []domain.Voucher {
+	vouchers := make([]domain.Voucher, len(rows))
+	for i, row := range rows {
+		vouchers[i] = toVoucher(row)
+	}
+	return vouchers
+}
+
+func toVoucher(row sqlcgen.Voucher) domain.Voucher {
+	voucher := domain.Voucher{
+		ID: row.ID, UserID: row.UserID, Date: row.Date, Amount: row.Amount,
+		SettledDate: row.SettledDate, CreatedAt: row.CreatedAt,
+	}
+	// The table's check guarantees the photo columns come all together.
+	if row.PhotoKey != nil && row.PhotoContentType != nil && row.PhotoSizeBytes != nil && row.PhotoCreatedAt != nil {
+		voucher.Photo = &domain.VoucherPhoto{
+			StorageKey: *row.PhotoKey, ContentType: *row.PhotoContentType,
+			SizeBytes: int64(*row.PhotoSizeBytes), CreatedAt: *row.PhotoCreatedAt,
+		}
+	}
+	return voucher
+}

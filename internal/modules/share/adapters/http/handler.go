@@ -21,6 +21,7 @@ var errNotFound = apierror.New(http.StatusNotFound, codeShareNotFound, "Este enl
 // Presenter renders trips (the trips module).
 type Presenter interface {
 	Present(list []trips.Trip) []trips.TripResponse
+	PresentVouchers(list []trips.Voucher) []trips.VoucherResponse
 }
 
 // Handler serves GET /share/:token.
@@ -43,6 +44,10 @@ type pendingResponse struct {
 	Count       int                  `json:"count"`
 	TotalAmount string               `json:"total_amount"`
 	Trips       []trips.TripResponse `json:"trips"`
+	// Fuel vouchers already paid by the borrower and what is left to pay: trips minus vouchers.
+	Vouchers      []trips.VoucherResponse `json:"vouchers"`
+	VoucherAmount string                  `json:"voucher_amount"`
+	Balance       string                  `json:"balance"`
 }
 
 type shareResponse struct {
@@ -74,6 +79,8 @@ func (h *Handler) get(c *gin.Context) {
 		OwnerName: page.OwnerName, CarName: page.CarName, BorrowerName: page.BorrowerName,
 		Pending: pendingResponse{
 			Count: len(page.Pending), TotalAmount: money.Format(page.PendingTotal), Trips: h.presenter.Present(page.Pending),
+			Vouchers: h.presenter.PresentVouchers(page.Vouchers), VoucherAmount: money.Format(page.VoucherTotal),
+			Balance: money.Format(page.PendingTotal.Sub(page.VoucherTotal)),
 		},
 		History: h.presenter.Present(page.History),
 	})

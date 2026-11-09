@@ -23,13 +23,16 @@ import (
 
 // Public types for the modules that show trips (home, share).
 type (
-	Trip         = domain.Trip
-	Status       = domain.Status
-	FuelType     = domain.FuelType
-	Rates        = domain.Rates
-	Totals       = app.Totals
-	MonthAmount  = app.MonthAmount
-	TripResponse = tripshttp.TripResponse
+	Trip            = domain.Trip
+	Status          = domain.Status
+	FuelType        = domain.FuelType
+	Rates           = domain.Rates
+	Return          = domain.Return
+	Totals          = app.Totals
+	MonthAmount     = app.MonthAmount
+	TripResponse    = tripshttp.TripResponse
+	Voucher         = domain.Voucher
+	VoucherResponse = tripshttp.VoucherResponse
 )
 
 // Statuses.
@@ -45,6 +48,9 @@ const MaxPhotoBytes = app.MaxPhotoBytes
 
 // PhotoUploadRoute takes a photo's raw bytes; main gives it a larger body limit.
 const PhotoUploadRoute = tripshttp.PhotoUploadRoute
+
+// VoucherPhotoRoute takes a voucher photo's raw bytes; main gives it a larger body limit too.
+const VoucherPhotoRoute = tripshttp.VoucherPhotoRoute
 
 // RatesFunc adapts a function (the settings module) to the rates port.
 type RatesFunc func(ctx context.Context, userID uuid.UUID) (Rates, error)
@@ -75,6 +81,7 @@ func New(deps Deps) *Module {
 	service := app.NewService(app.Deps{
 		Trips:          postgres.NewTrips(deps.Tx),
 		Photos:         postgres.NewPhotos(deps.Tx),
+		Vouchers:       postgres.NewVouchers(deps.Tx),
 		Files:          deps.Files,
 		Rates:          deps.Rates,
 		Tx:             deps.Tx,
@@ -94,6 +101,16 @@ func (m *Module) Present(trips []Trip) []TripResponse { return m.presenter.Trips
 
 // PresentOne renders one trip.
 func (m *Module) PresentOne(trip Trip) TripResponse { return m.presenter.Trip(trip) }
+
+// PresentVouchers renders vouchers as the API sends them, with signed photo URLs.
+func (m *Module) PresentVouchers(vouchers []Voucher) []VoucherResponse {
+	return m.presenter.Vouchers(vouchers)
+}
+
+// OpenVouchers returns the vouchers not yet discounted from a payment: the credit.
+func (m *Module) OpenVouchers(ctx context.Context, userID uuid.UUID) ([]Voucher, error) {
+	return m.service.Vouchers(ctx, userID, false)
+}
 
 // Open returns the trip in progress, or nil if the car is home.
 func (m *Module) Open(ctx context.Context, userID uuid.UUID) (*Trip, error) {

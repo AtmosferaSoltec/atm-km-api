@@ -116,3 +116,44 @@ func (p Presenter) photo(photo domain.Photo) *PhotoBody {
 func Km(km decimal.Decimal) json.Number {
 	return json.Number(km.String())
 }
+
+// VoucherResponse is a voucher as the API sends it.
+type VoucherResponse struct {
+	ID          uuid.UUID  `json:"id"`
+	Date        string     `json:"date"`
+	Amount      string     `json:"amount"`
+	SettledDate *string    `json:"settled_date"`
+	Photo       *PhotoBody `json:"photo"`
+	CreatedAt   time.Time  `json:"created_at"`
+}
+
+// voucherPhotoPath is where a voucher's photo is served, with the API prefix.
+func voucherPhotoPath(id uuid.UUID) string { return "/api/v1/vouchers/" + id.String() + "/photo" }
+
+// Voucher renders one voucher, signing its photo URL.
+func (p Presenter) Voucher(voucher domain.Voucher) VoucherResponse {
+	out := VoucherResponse{
+		ID: voucher.ID, Date: dates.Format(voucher.Date), Amount: money.Format(voucher.Amount),
+		SettledDate: dates.FormatOptional(voucher.SettledDate), CreatedAt: voucher.CreatedAt.UTC(),
+	}
+	if voucher.Photo != nil {
+		expires := p.Clock.Now().Truncate(time.Hour).Add(photoURLLifetime + time.Hour)
+		signed := p.Signer.Sign(voucher.ID.String(), expires)
+		query := url.Values{"exp": {fmt.Sprint(signed.Expires)}, "sig": {signed.Signature}}
+		out.Photo = &PhotoBody{
+			URL:       voucherPhotoPath(voucher.ID) + "?" + query.Encode(),
+			TakenAt:   voucher.Photo.CreatedAt.UTC(),
+			ExpiresAt: voucher.Photo.CreatedAt.Add(p.Retention).UTC(),
+		}
+	}
+	return out
+}
+
+// Vouchers renders a list; never null in JSON.
+func (p Presenter) Vouchers(vouchers []domain.Voucher) []VoucherResponse {
+	out := make([]VoucherResponse, len(vouchers))
+	for i, voucher := range vouchers {
+		out[i] = p.Voucher(voucher)
+	}
+	return out
+}

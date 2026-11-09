@@ -30,11 +30,18 @@ const (
 // /api/v1. It gets its own body limit.
 const PhotoUploadRoute = "/trips/:id/photos/:leg"
 
+// VoucherPhotoRoute is the voucher photo's route; PUT takes raw bytes and gets
+// its own body limit too.
+const VoucherPhotoRoute = "/vouchers/:id/photo"
+
 // The module's own codes.
 const (
 	codeAlreadyLent  = "CAR_ALREADY_LENT"
 	codeWrongStatus  = "TRIP_STATUS_CONFLICT"
 	codePhotoNotOpen = "TRIP_NOT_RETURNED"
+
+	codeVoucherSettled = "VOUCHER_SETTLED"
+	codeVouchersExceed = "VOUCHERS_EXCEED"
 )
 
 var (
@@ -43,6 +50,10 @@ var (
 	errAlreadyLent   = apierror.New(http.StatusConflict, codeAlreadyLent, "El auto ya está prestado. Recíbelo antes de prestarlo otra vez.")
 	errWrongStatus   = apierror.New(http.StatusConflict, codeWrongStatus, "El viaje cambió de estado. Actualiza la pantalla.")
 	errPhotoNotOpen  = apierror.New(http.StatusConflict, codePhotoNotOpen, "La foto de devolución va después de recibir el auto.")
+
+	errVoucherNotFound = apierror.New(http.StatusNotFound, apierror.CodeNotFound, "Este voucher ya no existe.")
+	errVoucherSettled  = apierror.New(http.StatusConflict, codeVoucherSettled, "Este voucher ya se descontó de un pago.")
+	errVouchersExceed  = apierror.New(http.StatusConflict, codeVouchersExceed, "Los vouchers superan el total de los viajes. Quita alguno.")
 )
 
 // Handler serves the trips routes.
@@ -72,6 +83,13 @@ func (h *Handler) Routes(public, protected gin.IRoutes) {
 	protected.PUT(PhotoUploadRoute, h.setPhoto)
 	protected.DELETE(PhotoUploadRoute, h.deletePhoto)
 	public.GET(PhotosPath+"/:photoID", h.servePhoto)
+
+	protected.GET("/vouchers", h.listVouchers)
+	protected.POST("/vouchers", h.addVoucher)
+	protected.DELETE("/vouchers/:id", h.deleteVoucher)
+	protected.PUT(VoucherPhotoRoute, h.setVoucherPhoto)
+	protected.DELETE(VoucherPhotoRoute, h.deleteVoucherPhoto)
+	public.GET(VoucherPhotoRoute, h.serveVoucherPhoto)
 }
 
 type returnBody struct {
@@ -89,11 +107,17 @@ type lendBody struct {
 
 type payBody struct {
 	TripIDs []uuid.UUID `json:"trip_ids"`
+	// VoucherIDs are discounted from the payment.
+	VoucherIDs []uuid.UUID `json:"voucher_ids"`
 }
 
 type summary struct {
-	Count       int64  `json:"count"`
-	TotalAmount string `json:"total_amount"`
+	Count         int64  `json:"count"`
+	TotalAmount   string `json:"total_amount"`
+	VoucherCount  int64  `json:"voucher_count"`
+	VoucherAmount string `json:"voucher_amount"`
+	// NetAmount is what the borrower hands over: the trips minus the vouchers.
+	NetAmount string `json:"net_amount"`
 }
 
 func (h *Handler) list(c *gin.Context) {
@@ -189,7 +213,7 @@ func (h *Handler) payMany(c *gin.Context) {
 	if !apierror.BindJSON(c, &body) {
 		return
 	}
-	result, err := h.service.PayMany(c.Request.Context(), userID, body.TripIDs)
+	result, err := h.service.PayMany(c.Request.Context(), userID, body.TripIDs, body.VoucherIDs)
 	if err != nil {
 		respondError(c, err)
 		return
@@ -198,7 +222,14 @@ func (h *Handler) payMany(c *gin.Context) {
 	if ids == nil {
 		ids = []uuid.UUID{}
 	}
-	apierror.OK(c, gin.H{"trip_ids": ids, "summary": summary{Count: int64(len(ids)), TotalAmount: money.Format(result.Total)}})
+	voucherIDs := result.VoucherIDs
+	if voucherIDs == nil {
+		voucherIDs = []uuid.UUID{}
+	}
+	apierror.OK(c, gin.H{"trip_ids": ids, "voucher_ids": voucherIDs, "summary": summary{
+		Count: int64(len(ids)), TotalAmount: money.Format(result.Total),
+		VoucherCount: int64(len(voucherIDs)), VoucherAmount: money.Format(result.VoucherTotal), NetAmount: money.Format(result.Net()),
+	}})
 }
 
 func (h *Handler) delete(c *gin.Context) {
@@ -344,6 +375,12 @@ func respondError(c *gin.Context, err error) {
 		apierror.Respond(c, errAlreadyLent)
 	case errors.Is(err, domain.ErrWrongStatus):
 		apierror.Respond(c, errWrongStatus)
+	case errors.Is(err, domain.ErrVoucherNotFound), errors.Is(err, domain.ErrNoVoucherPhoto):
+		apierror.Respond(c, errVoucherNotFound)
+	case errors.Is(err, domain.ErrVoucherSettled):
+		apierror.Respond(c, errVoucherSettled)
+	case errors.Is(err, domain.ErrVouchersExceed):
+		apierror.Respond(c, errVouchersExceed)
 	case errors.Is(err, domain.ErrPhotoLegClosed):
 		apierror.Respond(c, errPhotoNotOpen)
 	default:

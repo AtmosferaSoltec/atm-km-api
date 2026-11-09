@@ -31,3 +31,16 @@ func TestValidateAmountAndOdometer(t *testing.T) {
 		{"odometer", CodeNegative},
 	}, problems.Fields)
 }
+
+func TestValidatePricePerGallon(t *testing.T) {
+	var problems ValidationError
+	ValidatePricePerGallon(d("0"), &problems)
+	ValidatePricePerGallon(d("101"), &problems)
+	ValidatePricePerGallon(d("5.805"), &problems)
+	ValidatePricePerGallon(d("5.80"), &problems)
+	assert.Equal(t, []FieldError{
+		{"price_per_gallon", CodeNotPositive},
+		{"price_per_gallon", CodeTooLarge},
+		{"price_per_gallon", CodeTooPrecise},
+	}, problems.Fields)
+}

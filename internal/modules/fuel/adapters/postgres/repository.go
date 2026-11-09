@@ -33,7 +33,8 @@ func (r Repository) q(ctx context.Context) *sqlcgen.Queries { return sqlcgen.New
 func (r Repository) Insert(ctx context.Context, log domain.Log) error {
 	return r.q(ctx).InsertFuelLog(ctx, sqlcgen.InsertFuelLogParams{
 		ID: log.ID, UserID: log.UserID, Date: log.Date, Odometer: log.Odometer,
-		FuelType: string(log.FuelType), Amount: log.Amount, IsFull: log.IsFull, CreatedAt: log.CreatedAt,
+		FuelType: string(log.FuelType), Amount: log.Amount, IsFull: log.IsFull,
+		PricePerGallon: log.PricePerGallon, CreatedAt: log.CreatedAt,
 	})
 }
 
@@ -95,7 +96,8 @@ func toLogs(rows []sqlcgen.FuelLog) []domain.Log {
 	for i, row := range rows {
 		logs[i] = domain.Log{
 			ID: row.ID, UserID: row.UserID, Date: row.Date, Odometer: row.Odometer,
-			FuelType: domain.FuelType(row.FuelType), Amount: row.Amount, IsFull: row.IsFull, CreatedAt: row.CreatedAt,
+			FuelType: domain.FuelType(row.FuelType), Amount: row.Amount, IsFull: row.IsFull,
+			PricePerGallon: row.PricePerGallon, CreatedAt: row.CreatedAt,
 		}
 	}
 	return logs

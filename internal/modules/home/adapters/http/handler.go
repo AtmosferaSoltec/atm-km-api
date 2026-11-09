@@ -3,6 +3,7 @@ package http
 
 import (
 	"encoding/json"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 
@@ -18,6 +19,7 @@ import (
 type Presenter interface {
 	Present(list []trips.Trip) []trips.TripResponse
 	PresentOne(trip trips.Trip) trips.TripResponse
+	PresentVouchers(list []trips.Voucher) []trips.VoucherResponse
 }
 
 // Handler serves GET /home.
@@ -34,12 +36,63 @@ func NewHandler(service *app.Service, presenter Presenter) *Handler {
 // Routes mounts the route.
 func (h *Handler) Routes(protected gin.IRoutes) {
 	protected.GET("/home", h.get)
+	protected.GET("/usage", h.usage)
+}
+
+type weekUsageResponse struct {
+	Start      string      `json:"start"`
+	OwnerKm    json.Number `json:"owner_km"`
+	BorrowerKm json.Number `json:"borrower_km"`
+}
+
+type usageResponse struct {
+	Weeks         []weekUsageResponse `json:"weeks"`
+	OwnerKm       json.Number         `json:"owner_km"`
+	BorrowerKm    json.Number         `json:"borrower_km"`
+	OwnerSharePct int                 `json:"owner_share_pct"`
+}
+
+func (h *Handler) usage(c *gin.Context) {
+	userID, ok := auth.UserID(c)
+	if !ok {
+		return
+	}
+	weeks := app.DefaultUsageWeeks
+	if text := c.Query("weeks"); text != "" {
+		n, err := strconv.Atoi(text)
+		if err != nil || n < 1 || n > app.MaxUsageWeeks {
+			apierror.Respond(c, apierror.Validation(apierror.FieldError{Field: "weeks", Code: "INVALID"}))
+			return
+		}
+		weeks = n
+	}
+	usage, err := h.service.Usage(c.Request.Context(), userID, weeks)
+	if err != nil {
+		apierror.Respond(c, err)
+		return
+	}
+	out := usageResponse{
+		Weeks:   make([]weekUsageResponse, len(usage.Weeks)),
+		OwnerKm: json.Number(usage.OwnerKm.String()), BorrowerKm: json.Number(usage.BorrowerKm.String()),
+		OwnerSharePct: usage.OwnerSharePct,
+	}
+	for i, week := range usage.Weeks {
+		out.Weeks[i] = weekUsageResponse{
+			Start: dates.Format(week.Start), OwnerKm: json.Number(week.OwnerKm.String()), BorrowerKm: json.Number(week.BorrowerKm.String()),
+		}
+	}
+	apierror.OK(c, out)
 }
 
 type pendingResponse struct {
 	Count       int                  `json:"count"`
 	TotalAmount string               `json:"total_amount"`
 	Trips       []trips.TripResponse `json:"trips"`
+	// Vouchers the borrower paid and that are not yet discounted, and what is
+	// left to pay once they are: trips minus vouchers (negative if they exceed it).
+	Vouchers      []trips.VoucherResponse `json:"vouchers"`
+	VoucherAmount string                  `json:"voucher_amount"`
+	Balance       string                  `json:"balance"`
 }
 
 type recentResponse struct {
@@ -72,6 +125,8 @@ func (h *Handler) get(c *gin.Context) {
 	out := homeResponse{
 		Pending: pendingResponse{
 			Count: len(home.Pending), TotalAmount: money.Format(home.PendingTotal), Trips: h.presenter.Present(home.Pending),
+			Vouchers: h.presenter.PresentVouchers(home.Vouchers), VoucherAmount: money.Format(home.VoucherTotal),
+			Balance: money.Format(home.PendingTotal.Sub(home.VoucherTotal)),
 		},
 		Last30Days: recentResponse{
 			Since: dates.Format(home.Since), DistanceKm: json.Number(home.Recent.DistanceKm.String()),

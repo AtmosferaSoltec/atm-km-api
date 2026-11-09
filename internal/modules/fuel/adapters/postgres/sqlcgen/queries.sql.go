@@ -79,7 +79,7 @@ func (q *Queries) DeleteFuelLog(ctx context.Context, arg DeleteFuelLogParams) (i
 }
 
 const fuelLogsSince = `-- name: FuelLogsSince :many
-SELECT id, user_id, date, odometer, fuel_type, amount, is_full, created_at FROM fuel_logs
+SELECT id, user_id, date, odometer, fuel_type, amount, is_full, created_at, price_per_gallon FROM fuel_logs
 WHERE user_id = $1 AND date >= $2
 ORDER BY date DESC, created_at DESC
 `
@@ -107,6 +107,7 @@ func (q *Queries) FuelLogsSince(ctx context.Context, arg FuelLogsSinceParams) ([
 			&i.Amount,
 			&i.IsFull,
 			&i.CreatedAt,
+			&i.PricePerGallon,
 		); err != nil {
 			return nil, err
 		}
@@ -135,19 +136,20 @@ func (q *Queries) HasFuelLogsBefore(ctx context.Context, arg HasFuelLogsBeforePa
 }
 
 const insertFuelLog = `-- name: InsertFuelLog :exec
-INSERT INTO fuel_logs (id, user_id, date, odometer, fuel_type, amount, is_full, created_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+INSERT INTO fuel_logs (id, user_id, date, odometer, fuel_type, amount, is_full, price_per_gallon, created_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 `
 
 type InsertFuelLogParams struct {
-	ID        uuid.UUID
-	UserID    uuid.UUID
-	Date      time.Time
-	Odometer  decimal.Decimal
-	FuelType  string
-	Amount    decimal.Decimal
-	IsFull    bool
-	CreatedAt time.Time
+	ID             uuid.UUID
+	UserID         uuid.UUID
+	Date           time.Time
+	Odometer       decimal.Decimal
+	FuelType       string
+	Amount         decimal.Decimal
+	IsFull         bool
+	PricePerGallon *decimal.Decimal
+	CreatedAt      time.Time
 }
 
 func (q *Queries) InsertFuelLog(ctx context.Context, arg InsertFuelLogParams) error {
@@ -159,13 +161,14 @@ func (q *Queries) InsertFuelLog(ctx context.Context, arg InsertFuelLogParams) er
 		arg.FuelType,
 		arg.Amount,
 		arg.IsFull,
+		arg.PricePerGallon,
 		arg.CreatedAt,
 	)
 	return err
 }
 
 const listFuelLogs = `-- name: ListFuelLogs :many
-SELECT id, user_id, date, odometer, fuel_type, amount, is_full, created_at FROM fuel_logs
+SELECT id, user_id, date, odometer, fuel_type, amount, is_full, created_at, price_per_gallon FROM fuel_logs
 WHERE user_id = $1
 ORDER BY date DESC, created_at DESC
 LIMIT $3 OFFSET $2
@@ -195,6 +198,7 @@ func (q *Queries) ListFuelLogs(ctx context.Context, arg ListFuelLogsParams) ([]F
 			&i.Amount,
 			&i.IsFull,
 			&i.CreatedAt,
+			&i.PricePerGallon,
 		); err != nil {
 			return nil, err
 		}

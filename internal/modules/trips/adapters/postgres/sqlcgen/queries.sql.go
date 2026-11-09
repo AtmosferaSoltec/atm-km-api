@@ -40,6 +40,17 @@ func (q *Queries) BillableSince(ctx context.Context, arg BillableSinceParams) (B
 	return i, err
 }
 
+const clearVoucherPhoto = `-- name: ClearVoucherPhoto :exec
+UPDATE vouchers
+SET photo_key = NULL, photo_content_type = NULL, photo_size_bytes = NULL, photo_created_at = NULL
+WHERE id = $1
+`
+
+func (q *Queries) ClearVoucherPhoto(ctx context.Context, id uuid.UUID) error {
+	_, err := q.db.Exec(ctx, clearVoucherPhoto, id)
+	return err
+}
+
 const countTrips = `-- name: CountTrips :one
 SELECT count(*) FROM trips
 WHERE user_id = $1
@@ -81,6 +92,23 @@ func (q *Queries) DeleteTripPhoto(ctx context.Context, id uuid.UUID) error {
 	return err
 }
 
+const deleteVoucher = `-- name: DeleteVoucher :execrows
+DELETE FROM vouchers WHERE id = $1 AND user_id = $2 AND settled_date IS NULL
+`
+
+type DeleteVoucherParams struct {
+	ID     uuid.UUID
+	UserID uuid.UUID
+}
+
+func (q *Queries) DeleteVoucher(ctx context.Context, arg DeleteVoucherParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteVoucher, arg.ID, arg.UserID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const expiredPhotos = `-- name: ExpiredPhotos :many
 SELECT id, trip_id, user_id, leg, storage_key, content_type, size_bytes, created_at FROM trip_photos WHERE created_at < $1 ORDER BY created_at LIMIT $2
 `
@@ -108,6 +136,47 @@ func (q *Queries) ExpiredPhotos(ctx context.Context, arg ExpiredPhotosParams) ([
 			&i.StorageKey,
 			&i.ContentType,
 			&i.SizeBytes,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const expiredVoucherPhotos = `-- name: ExpiredVoucherPhotos :many
+SELECT id, user_id, date, amount, settled_date, photo_key, photo_content_type, photo_size_bytes, photo_created_at, created_at FROM vouchers WHERE photo_key IS NOT NULL AND photo_created_at < $1 ORDER BY photo_created_at LIMIT $2
+`
+
+type ExpiredVoucherPhotosParams struct {
+	PhotoCreatedAt *time.Time
+	Limit          int32
+}
+
+// Photos past their retention, oldest first.
+func (q *Queries) ExpiredVoucherPhotos(ctx context.Context, arg ExpiredVoucherPhotosParams) ([]Voucher, error) {
+	rows, err := q.db.Query(ctx, expiredVoucherPhotos, arg.PhotoCreatedAt, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Voucher
+	for rows.Next() {
+		var i Voucher
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserID,
+			&i.Date,
+			&i.Amount,
+			&i.SettledDate,
+			&i.PhotoKey,
+			&i.PhotoContentType,
+			&i.PhotoSizeBytes,
+			&i.PhotoCreatedAt,
 			&i.CreatedAt,
 		); err != nil {
 			return nil, err
@@ -266,6 +335,56 @@ func (q *Queries) GetTripPhoto(ctx context.Context, arg GetTripPhotoParams) (Tri
 	return i, err
 }
 
+const getVoucher = `-- name: GetVoucher :one
+SELECT id, user_id, date, amount, settled_date, photo_key, photo_content_type, photo_size_bytes, photo_created_at, created_at FROM vouchers WHERE id = $1 AND user_id = $2
+`
+
+type GetVoucherParams struct {
+	ID     uuid.UUID
+	UserID uuid.UUID
+}
+
+func (q *Queries) GetVoucher(ctx context.Context, arg GetVoucherParams) (Voucher, error) {
+	row := q.db.QueryRow(ctx, getVoucher, arg.ID, arg.UserID)
+	var i Voucher
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.Date,
+		&i.Amount,
+		&i.SettledDate,
+		&i.PhotoKey,
+		&i.PhotoContentType,
+		&i.PhotoSizeBytes,
+		&i.PhotoCreatedAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getVoucherByID = `-- name: GetVoucherByID :one
+SELECT id, user_id, date, amount, settled_date, photo_key, photo_content_type, photo_size_bytes, photo_created_at, created_at FROM vouchers WHERE id = $1
+`
+
+// Serves a photo to whoever holds its signed URL: the signature is the credential.
+func (q *Queries) GetVoucherByID(ctx context.Context, id uuid.UUID) (Voucher, error) {
+	row := q.db.QueryRow(ctx, getVoucherByID, id)
+	var i Voucher
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.Date,
+		&i.Amount,
+		&i.SettledDate,
+		&i.PhotoKey,
+		&i.PhotoContentType,
+		&i.PhotoSizeBytes,
+		&i.PhotoCreatedAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const insertPhoto = `-- name: InsertPhoto :exec
 INSERT INTO trip_photos (id, trip_id, user_id, leg, storage_key, content_type, size_bytes, created_at)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
@@ -334,6 +453,29 @@ func (q *Queries) InsertTrip(ctx context.Context, arg InsertTripParams) error {
 		arg.FuelAmount,
 		arg.WearAmount,
 		arg.TotalAmount,
+		arg.CreatedAt,
+	)
+	return err
+}
+
+const insertVoucher = `-- name: InsertVoucher :exec
+INSERT INTO vouchers (id, user_id, date, amount, created_at) VALUES ($1, $2, $3, $4, $5)
+`
+
+type InsertVoucherParams struct {
+	ID        uuid.UUID
+	UserID    uuid.UUID
+	Date      time.Time
+	Amount    decimal.Decimal
+	CreatedAt time.Time
+}
+
+func (q *Queries) InsertVoucher(ctx context.Context, arg InsertVoucherParams) error {
+	_, err := q.db.Exec(ctx, insertVoucher,
+		arg.ID,
+		arg.UserID,
+		arg.Date,
+		arg.Amount,
 		arg.CreatedAt,
 	)
 	return err
@@ -460,6 +602,50 @@ func (q *Queries) ListTripsByStatus(ctx context.Context, arg ListTripsByStatusPa
 	return items, nil
 }
 
+const listVouchers = `-- name: ListVouchers :many
+SELECT id, user_id, date, amount, settled_date, photo_key, photo_content_type, photo_size_bytes, photo_created_at, created_at FROM vouchers
+WHERE user_id = $1 AND (settled_date IS NOT NULL) = $2::boolean
+ORDER BY date DESC, created_at DESC
+LIMIT $3
+`
+
+type ListVouchersParams struct {
+	UserID   uuid.UUID
+	Settled  bool
+	RowLimit int32
+}
+
+func (q *Queries) ListVouchers(ctx context.Context, arg ListVouchersParams) ([]Voucher, error) {
+	rows, err := q.db.Query(ctx, listVouchers, arg.UserID, arg.Settled, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Voucher
+	for rows.Next() {
+		var i Voucher
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserID,
+			&i.Date,
+			&i.Amount,
+			&i.SettledDate,
+			&i.PhotoKey,
+			&i.PhotoContentType,
+			&i.PhotoSizeBytes,
+			&i.PhotoCreatedAt,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lockTrip = `-- name: LockTrip :one
 SELECT id, user_id, status, start_date, start_km, return_date, end_km, fuel_type, fuel_rate, wear_rate, fuel_amount, wear_amount, total_amount, paid_date, created_at, updated_at FROM trips WHERE id = $1 AND user_id = $2 FOR UPDATE
 `
@@ -490,6 +676,33 @@ func (q *Queries) LockTrip(ctx context.Context, arg LockTripParams) (Trip, error
 		&i.PaidDate,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const lockVoucher = `-- name: LockVoucher :one
+SELECT id, user_id, date, amount, settled_date, photo_key, photo_content_type, photo_size_bytes, photo_created_at, created_at FROM vouchers WHERE id = $1 AND user_id = $2 FOR UPDATE
+`
+
+type LockVoucherParams struct {
+	ID     uuid.UUID
+	UserID uuid.UUID
+}
+
+func (q *Queries) LockVoucher(ctx context.Context, arg LockVoucherParams) (Voucher, error) {
+	row := q.db.QueryRow(ctx, lockVoucher, arg.ID, arg.UserID)
+	var i Voucher
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.Date,
+		&i.Amount,
+		&i.SettledDate,
+		&i.PhotoKey,
+		&i.PhotoContentType,
+		&i.PhotoSizeBytes,
+		&i.PhotoCreatedAt,
+		&i.CreatedAt,
 	)
 	return i, err
 }
@@ -662,4 +875,74 @@ func (q *Queries) SetTripStatus(ctx context.Context, arg SetTripStatusParams) er
 		arg.PaidDate,
 	)
 	return err
+}
+
+const setVoucherPhoto = `-- name: SetVoucherPhoto :exec
+UPDATE vouchers
+SET photo_key = $3, photo_content_type = $4, photo_size_bytes = $5, photo_created_at = $6
+WHERE id = $1 AND user_id = $2
+`
+
+type SetVoucherPhotoParams struct {
+	ID               uuid.UUID
+	UserID           uuid.UUID
+	PhotoKey         *string
+	PhotoContentType *string
+	PhotoSizeBytes   *int32
+	PhotoCreatedAt   *time.Time
+}
+
+func (q *Queries) SetVoucherPhoto(ctx context.Context, arg SetVoucherPhotoParams) error {
+	_, err := q.db.Exec(ctx, setVoucherPhoto,
+		arg.ID,
+		arg.UserID,
+		arg.PhotoKey,
+		arg.PhotoContentType,
+		arg.PhotoSizeBytes,
+		arg.PhotoCreatedAt,
+	)
+	return err
+}
+
+const settleVouchers = `-- name: SettleVouchers :many
+UPDATE vouchers SET settled_date = $2
+WHERE user_id = $1 AND settled_date IS NULL AND id = ANY($3::uuid[])
+RETURNING id, user_id, date, amount, settled_date, photo_key, photo_content_type, photo_size_bytes, photo_created_at, created_at
+`
+
+type SettleVouchersParams struct {
+	UserID      uuid.UUID
+	SettledDate *time.Time
+	Ids         []uuid.UUID
+}
+
+func (q *Queries) SettleVouchers(ctx context.Context, arg SettleVouchersParams) ([]Voucher, error) {
+	rows, err := q.db.Query(ctx, settleVouchers, arg.UserID, arg.SettledDate, arg.Ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Voucher
+	for rows.Next() {
+		var i Voucher
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserID,
+			&i.Date,
+			&i.Amount,
+			&i.SettledDate,
+			&i.PhotoKey,
+			&i.PhotoContentType,
+			&i.PhotoSizeBytes,
+			&i.PhotoCreatedAt,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
