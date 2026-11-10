@@ -1,12 +1,10 @@
-// Package domain holds each owner's settings: the car, who borrows it, the
-// per-km rates and the share link.
+// Package domain holds each owner's settings: the per-km rates and the share link.
 package domain
 
 import (
 	"errors"
 	"fmt"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
@@ -14,9 +12,7 @@ import (
 
 // Limits. A rate above 100 soles per km is a typo, not a price.
 const (
-	CarNameMaxLength      = 60
-	BorrowerNameMaxLength = 40
-	rateScale             = 3
+	rateScale = 3
 )
 
 var maxRate = decimal.NewFromInt(100)
@@ -24,7 +20,6 @@ var maxRate = decimal.NewFromInt(100)
 // Field codes the clients know how to show.
 const (
 	CodeRequired   = "REQUIRED"
-	CodeTooLong    = "TOO_LONG"
 	CodeInvalid    = "INVALID"
 	CodeNegative   = "NEGATIVE"
 	CodeTooLarge   = "TOO_LARGE"
@@ -44,11 +39,9 @@ type Rates struct {
 
 // Settings are one owner's.
 type Settings struct {
-	UserID       uuid.UUID
-	CarName      string
-	BorrowerName string
-	Rates        Rates
-	ShareToken   uuid.UUID
+	UserID     uuid.UUID
+	Rates      Rates
+	ShareToken uuid.UUID
 }
 
 // FieldError is a field with a problem.
@@ -96,19 +89,4 @@ func ParseRate(field, text string, problems *ValidationError) decimal.Decimal {
 		problems.Add(field, CodeTooPrecise)
 	}
 	return rate
-}
-
-// NormalizeName collapses inner spaces and trims.
-func NormalizeName(name string) string {
-	return strings.Join(strings.Fields(name), " ")
-}
-
-// ValidateName checks a required name of at most maxLength characters.
-func ValidateName(field, name string, maxLength int, problems *ValidationError) {
-	switch {
-	case name == "":
-		problems.Add(field, CodeRequired)
-	case utf8.RuneCountInString(name) > maxLength:
-		problems.Add(field, CodeTooLong)
-	}
 }

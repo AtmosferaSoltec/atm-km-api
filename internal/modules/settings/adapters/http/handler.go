@@ -25,7 +25,6 @@ func NewHandler(service *app.Service) *Handler { return &Handler{service: servic
 func (h *Handler) Routes(protected gin.IRoutes) {
 	protected.GET("/settings", h.get)
 	protected.PUT("/settings/rates", h.updateRates)
-	protected.PUT("/settings/profile", h.updateProfile)
 	protected.POST("/settings/share-token", h.rotateShareToken)
 }
 
@@ -35,16 +34,9 @@ type ratesBody struct {
 	WearRate     string `json:"wear_rate"`
 }
 
-type profileBody struct {
-	CarName      string `json:"car_name"`
-	BorrowerName string `json:"borrower_name"`
-}
-
 type settingsResponse struct {
-	CarName      string    `json:"car_name"`
-	BorrowerName string    `json:"borrower_name"`
-	Rates        ratesBody `json:"rates"`
-	ShareToken   uuid.UUID `json:"share_token"`
+	Rates      ratesBody `json:"rates"`
+	ShareToken uuid.UUID `json:"share_token"`
 }
 
 func (h *Handler) get(c *gin.Context) {
@@ -68,19 +60,6 @@ func (h *Handler) updateRates(c *gin.Context) {
 	settings, err := h.service.UpdateRates(c.Request.Context(), userID, app.RatesInput{
 		Gasoline: body.GasolineRate, LPG: body.LPGRate, Wear: body.WearRate,
 	})
-	respond(c, settings, err)
-}
-
-func (h *Handler) updateProfile(c *gin.Context) {
-	userID, ok := auth.UserID(c)
-	if !ok {
-		return
-	}
-	var body profileBody
-	if !apierror.BindJSON(c, &body) {
-		return
-	}
-	settings, err := h.service.UpdateProfile(c.Request.Context(), userID, body.CarName, body.BorrowerName)
 	respond(c, settings, err)
 }
 
@@ -112,8 +91,6 @@ func respond(c *gin.Context, settings domain.Settings, err error) {
 // toResponse renders settings for the API. Rates keep their three decimals.
 func toResponse(s domain.Settings) settingsResponse {
 	return settingsResponse{
-		CarName:      s.CarName,
-		BorrowerName: s.BorrowerName,
 		Rates: ratesBody{
 			GasolineRate: s.Rates.Gasoline.StringFixed(3),
 			LPGRate:      s.Rates.LPG.StringFixed(3),

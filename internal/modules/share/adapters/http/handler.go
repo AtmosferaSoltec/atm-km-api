@@ -51,11 +51,9 @@ type pendingResponse struct {
 }
 
 type shareResponse struct {
-	OwnerName    string               `json:"owner_name"`
-	CarName      string               `json:"car_name"`
-	BorrowerName string               `json:"borrower_name"`
-	Pending      pendingResponse      `json:"pending"`
-	History      []trips.TripResponse `json:"history"`
+	OwnerName string               `json:"owner_name"`
+	Pending   pendingResponse      `json:"pending"`
+	History   []trips.TripResponse `json:"history"`
 }
 
 func (h *Handler) get(c *gin.Context) {
@@ -76,7 +74,7 @@ func (h *Handler) get(c *gin.Context) {
 	// The borrower's page must not be cached by a shared proxy.
 	c.Header("Cache-Control", "private, no-store")
 	apierror.OK(c, shareResponse{
-		OwnerName: page.OwnerName, CarName: page.CarName, BorrowerName: page.BorrowerName,
+		OwnerName: page.OwnerName,
 		Pending: pendingResponse{
 			Count: len(page.Pending), TotalAmount: money.Format(page.PendingTotal), Trips: h.presenter.Present(page.Pending),
 			Vouchers: h.presenter.PresentVouchers(page.Vouchers), VoucherAmount: money.Format(page.VoucherTotal),

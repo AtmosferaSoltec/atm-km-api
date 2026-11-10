@@ -24,11 +24,3 @@ func TestParseRate(t *testing.T) {
 		assert.Equal(t, []FieldError{{"gasoline_rate", code}}, problems.Fields, text)
 	}
 }
-
-func TestNames(t *testing.T) {
-	var problems ValidationError
-	ValidateName("car_name", NormalizeName("  Toyota   Yaris "), CarNameMaxLength, &problems)
-	assert.NoError(t, problems.OrNil())
-	ValidateName("borrower_name", "", BorrowerNameMaxLength, &problems)
-	assert.Equal(t, []FieldError{{"borrower_name", CodeRequired}}, problems.Fields)
-}

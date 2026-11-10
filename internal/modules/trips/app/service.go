@@ -96,7 +96,9 @@ func (s *Service) Lend(ctx context.Context, userID uuid.UUID, in LendInput) (dom
 	return trip, nil
 }
 
-// Receive closes the trip in progress and bills it with the current rates.
+// Receive closes the trip in progress and bills it with the current rates. It
+// also corrects the return of a trip still waiting for payment (a wrong end km
+// or date), keeping its rates unless the fuel changed; a paid trip is history.
 func (s *Service) Receive(ctx context.Context, userID, tripID uuid.UUID, in ReturnInput) (domain.Trip, error) {
 	var problems domain.ValidationError
 	ret := parseReturn(in, &problems)
@@ -112,16 +114,22 @@ func (s *Service) Receive(ctx context.Context, userID, tripID uuid.UUID, in Retu
 		if err != nil {
 			return err
 		}
-		if trip.Status != domain.StatusInProgress {
+		if trip.Status != domain.StatusInProgress && trip.Status != domain.StatusPending {
 			return domain.ErrWrongStatus
 		}
 		domain.ValidateReturn(trip.StartDate, trip.StartKm, ret.date, ret.endKm, s.today(), &problems)
 		if err := problems.OrNil(); err != nil {
 			return err
 		}
+		billingRates := rates
+		if trip.Return != nil && trip.Return.FuelType == ret.fuel {
+			// A correction keeps the rates the trip was charged with: fixing a
+			// km reading must not reprice it because the rates changed since.
+			billingRates = domain.Rates{Gasoline: trip.Return.Billing.FuelRate, LPG: trip.Return.Billing.FuelRate, Wear: trip.Return.Billing.WearRate}
+		}
 		return s.deps.Trips.SaveReturn(ctx, userID, tripID, domain.Return{
 			Date: ret.date, EndKm: ret.endKm, FuelType: ret.fuel,
-			Billing: domain.Bill(ret.endKm.Sub(trip.StartKm), ret.fuel, rates),
+			Billing: domain.Bill(ret.endKm.Sub(trip.StartKm), ret.fuel, billingRates),
 		})
 	})
 	if err != nil {

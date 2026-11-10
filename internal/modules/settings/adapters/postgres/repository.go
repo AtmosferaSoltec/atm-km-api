@@ -50,14 +50,6 @@ func (r Repository) UpdateRates(ctx context.Context, userID uuid.UUID, rates dom
 	return toSettings(sqlcgen.GetSettingsRow(row)), err
 }
 
-// UpdateProfile stores the names.
-func (r Repository) UpdateProfile(ctx context.Context, userID uuid.UUID, carName, borrowerName string) (domain.Settings, error) {
-	row, err := r.q(ctx).UpdateProfile(ctx, sqlcgen.UpdateProfileParams{
-		UserID: userID, CarName: carName, BorrowerName: borrowerName,
-	})
-	return toSettings(sqlcgen.GetSettingsRow(row)), err
-}
-
 // RotateShareToken stores a new share token.
 func (r Repository) RotateShareToken(ctx context.Context, userID, token uuid.UUID) (domain.Settings, error) {
 	row, err := r.q(ctx).RotateShareToken(ctx, sqlcgen.RotateShareTokenParams{UserID: userID, ShareToken: token})
@@ -78,10 +70,8 @@ func (r Repository) ByShareToken(ctx context.Context, token uuid.UUID) (domain.S
 
 func toSettings(row sqlcgen.GetSettingsRow) domain.Settings {
 	return domain.Settings{
-		UserID:       row.UserID,
-		CarName:      row.CarName,
-		BorrowerName: row.BorrowerName,
-		Rates:        domain.Rates{Gasoline: row.GasolineRate, LPG: row.LpgRate, Wear: row.WearRate},
-		ShareToken:   row.ShareToken,
+		UserID:     row.UserID,
+		Rates:      domain.Rates{Gasoline: row.GasolineRate, LPG: row.LpgRate, Wear: row.WearRate},
+		ShareToken: row.ShareToken,
 	}
 }

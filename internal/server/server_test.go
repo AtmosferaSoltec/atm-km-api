@@ -306,6 +306,17 @@ func TestLendReceiveAndGetPaid(t *testing.T) {
 	e.do("PUT", "/api/v1/settings/rates", access, map[string]string{"gasoline_rate": "1", "lpg_rate": "1", "wear_rate": "1"})
 	assert.Equal(t, "68.80", e.do("GET", "/api/v1/trips/"+tripID, access, nil).data()["total_amount"])
 
+	// A return still waiting for payment can be corrected, keeping its rates
+	// even though the rates changed since; a paid one cannot.
+	fixed := e.do("POST", "/api/v1/trips/"+tripID+"/return", access, map[string]any{"return_date": "2026-10-30", "end_km": "45410.5", "fuel_type": "LPG"})
+	require.Equal(t, http.StatusOK, fixed.Status, string(fixed.Raw))
+	assert.Equal(t, "PENDING", fixed.data()["status"])
+	assert.Equal(t, float64(200), fixed.data()["distance_km"])
+	assert.Equal(t, "80.00", fixed.data()["total_amount"])
+	assert.Equal(t, "VALIDATION_FAILED", e.do("POST", "/api/v1/trips/"+tripID+"/return", access, map[string]any{"return_date": "2026-10-30", "end_km": 45000, "fuel_type": "LPG"}).errorCode())
+	reset := e.do("POST", "/api/v1/trips/"+tripID+"/return", access, map[string]any{"return_date": "2026-10-30", "end_km": "45382.5", "fuel_type": "LPG"})
+	assert.Equal(t, "68.80", reset.data()["total_amount"])
+
 	// A trip registered after the fact, with the new rates.
 	late := e.do("POST", "/api/v1/trips", access, map[string]any{
 		"start_date": "2026-11-01", "start_km": 45400,
@@ -331,6 +342,8 @@ func TestLendReceiveAndGetPaid(t *testing.T) {
 	trip = e.do("GET", "/api/v1/trips/"+tripID, access, nil).data()
 	assert.Equal(t, "PAID", trip["status"])
 	assert.Equal(t, "2026-11-02", trip["paid_date"])
+
+	assert.Equal(t, "TRIP_STATUS_CONFLICT", e.do("POST", "/api/v1/trips/"+tripID+"/return", access, map[string]any{"return_date": "2026-10-30", "end_km": "45400", "fuel_type": "LPG"}).errorCode(), "paid trips are history")
 
 	undone := e.do("POST", "/api/v1/trips/"+tripID+"/unpay", access, nil)
 	assert.Equal(t, "PENDING", undone.data()["status"])
@@ -560,7 +573,6 @@ func TestVouchersAreDiscountedFromAPayment(t *testing.T) {
 func TestShareLink(t *testing.T) {
 	e := newEnv(t)
 	access, _ := e.login(e.newUser("share"))
-	e.do("PUT", "/api/v1/settings/profile", access, map[string]string{"car_name": "Toyota Yaris", "borrower_name": "Carlos"})
 	e.do("POST", "/api/v1/trips", access, map[string]any{
 		"start_date": "2026-11-01", "start_km": 100,
 		"return": map[string]any{"return_date": "2026-11-01", "end_km": 150, "fuel_type": "GASOLINE"},
@@ -570,8 +582,8 @@ func TestShareLink(t *testing.T) {
 	page := e.do("GET", "/api/v1/share/"+token, "", nil)
 	require.Equal(t, http.StatusOK, page.Status)
 	data := page.data()
-	assert.Equal(t, "Toyota Yaris", data["car_name"])
-	assert.Equal(t, "Carlos", data["borrower_name"])
+	assert.NotContains(t, data, "car_name")
+	assert.NotContains(t, data, "borrower_name")
 	assert.Equal(t, "30.00", data["pending"].(map[string]any)["total_amount"])
 	assert.NotContains(t, string(page.Raw), "fuel_logs")
 

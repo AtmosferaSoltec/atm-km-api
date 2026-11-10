@@ -44,8 +44,6 @@ type User struct {
 
 type UserSetting struct {
 	UserID       uuid.UUID
-	CarName      string
-	BorrowerName string
 	GasolineRate decimal.Decimal
 	LpgRate      decimal.Decimal
 	WearRate     decimal.Decimal

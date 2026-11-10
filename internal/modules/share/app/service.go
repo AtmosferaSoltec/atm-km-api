@@ -41,8 +41,6 @@ type Trips interface {
 // Page is what the borrower sees.
 type Page struct {
 	OwnerName    string
-	CarName      string
-	BorrowerName string
 	Pending      []trips.Trip
 	PendingTotal decimal.Decimal
 	// Vouchers are the fuel the borrower already paid for: credit not yet discounted.
@@ -76,7 +74,7 @@ func (s *Service) Get(ctx context.Context, token uuid.UUID) (Page, error) {
 	if err != nil {
 		return Page{}, ErrNotFound
 	}
-	page := Page{OwnerName: name, CarName: owner.CarName, BorrowerName: owner.BorrowerName}
+	page := Page{OwnerName: name}
 	if page.Pending, err = s.trips.ByStatus(ctx, owner.UserID, []trips.Status{trips.StatusPending}, maxPending); err != nil {
 		return Page{}, err
 	}

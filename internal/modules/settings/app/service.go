@@ -14,7 +14,6 @@ type Repository interface {
 	// Ensure creates the default row if the user has none and returns it.
 	Ensure(ctx context.Context, userID uuid.UUID) (domain.Settings, error)
 	UpdateRates(ctx context.Context, userID uuid.UUID, rates domain.Rates) (domain.Settings, error)
-	UpdateProfile(ctx context.Context, userID uuid.UUID, carName, borrowerName string) (domain.Settings, error)
 	RotateShareToken(ctx context.Context, userID uuid.UUID, token uuid.UUID) (domain.Settings, error)
 	// ByShareToken returns domain.ErrNotFound if no settings carry the token.
 	ByShareToken(ctx context.Context, token uuid.UUID) (domain.Settings, error)
@@ -56,22 +55,6 @@ func (s *Service) UpdateRates(ctx context.Context, userID uuid.UUID, in RatesInp
 		return domain.Settings{}, err
 	}
 	return s.repo.UpdateRates(ctx, userID, rates)
-}
-
-// UpdateProfile changes the car's and the borrower's names.
-func (s *Service) UpdateProfile(ctx context.Context, userID uuid.UUID, carName, borrowerName string) (domain.Settings, error) {
-	carName = domain.NormalizeName(carName)
-	borrowerName = domain.NormalizeName(borrowerName)
-	var problems domain.ValidationError
-	domain.ValidateName("car_name", carName, domain.CarNameMaxLength, &problems)
-	domain.ValidateName("borrower_name", borrowerName, domain.BorrowerNameMaxLength, &problems)
-	if err := problems.OrNil(); err != nil {
-		return domain.Settings{}, err
-	}
-	if _, err := s.repo.Ensure(ctx, userID); err != nil {
-		return domain.Settings{}, err
-	}
-	return s.repo.UpdateProfile(ctx, userID, carName, borrowerName)
 }
 
 // RotateShareToken invalidates the current share link and makes a new one.

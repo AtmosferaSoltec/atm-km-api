@@ -57,6 +57,7 @@ sql:
     schema:
       - migrations/00001_identity_create_users_and_sessions.sql
       - migrations/00002_settings_create_user_settings.sql
+      - migrations/00008_settings_drop_car_and_borrower_names.sql
     queries: ../internal/modules/settings/adapters/postgres/queries.sql
     gen:
       go:

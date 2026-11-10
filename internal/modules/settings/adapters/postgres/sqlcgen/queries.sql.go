@@ -23,15 +23,13 @@ func (q *Queries) EnsureSettings(ctx context.Context, userID uuid.UUID) error {
 }
 
 const getSettings = `-- name: GetSettings :one
-SELECT user_id, car_name, borrower_name, gasoline_rate, lpg_rate, wear_rate, share_token
+SELECT user_id, gasoline_rate, lpg_rate, wear_rate, share_token
 FROM user_settings
 WHERE user_id = $1
 `
 
 type GetSettingsRow struct {
 	UserID       uuid.UUID
-	CarName      string
-	BorrowerName string
 	GasolineRate decimal.Decimal
 	LpgRate      decimal.Decimal
 	WearRate     decimal.Decimal
@@ -43,8 +41,6 @@ func (q *Queries) GetSettings(ctx context.Context, userID uuid.UUID) (GetSetting
 	var i GetSettingsRow
 	err := row.Scan(
 		&i.UserID,
-		&i.CarName,
-		&i.BorrowerName,
 		&i.GasolineRate,
 		&i.LpgRate,
 		&i.WearRate,
@@ -54,15 +50,13 @@ func (q *Queries) GetSettings(ctx context.Context, userID uuid.UUID) (GetSetting
 }
 
 const getSettingsByShareToken = `-- name: GetSettingsByShareToken :one
-SELECT user_id, car_name, borrower_name, gasoline_rate, lpg_rate, wear_rate, share_token
+SELECT user_id, gasoline_rate, lpg_rate, wear_rate, share_token
 FROM user_settings
 WHERE share_token = $1
 `
 
 type GetSettingsByShareTokenRow struct {
 	UserID       uuid.UUID
-	CarName      string
-	BorrowerName string
 	GasolineRate decimal.Decimal
 	LpgRate      decimal.Decimal
 	WearRate     decimal.Decimal
@@ -74,8 +68,6 @@ func (q *Queries) GetSettingsByShareToken(ctx context.Context, shareToken uuid.U
 	var i GetSettingsByShareTokenRow
 	err := row.Scan(
 		&i.UserID,
-		&i.CarName,
-		&i.BorrowerName,
 		&i.GasolineRate,
 		&i.LpgRate,
 		&i.WearRate,
@@ -88,7 +80,7 @@ const rotateShareToken = `-- name: RotateShareToken :one
 UPDATE user_settings
 SET share_token = $2, updated_at = now()
 WHERE user_id = $1
-RETURNING user_id, car_name, borrower_name, gasoline_rate, lpg_rate, wear_rate, share_token
+RETURNING user_id, gasoline_rate, lpg_rate, wear_rate, share_token
 `
 
 type RotateShareTokenParams struct {
@@ -98,8 +90,6 @@ type RotateShareTokenParams struct {
 
 type RotateShareTokenRow struct {
 	UserID       uuid.UUID
-	CarName      string
-	BorrowerName string
 	GasolineRate decimal.Decimal
 	LpgRate      decimal.Decimal
 	WearRate     decimal.Decimal
@@ -111,46 +101,6 @@ func (q *Queries) RotateShareToken(ctx context.Context, arg RotateShareTokenPara
 	var i RotateShareTokenRow
 	err := row.Scan(
 		&i.UserID,
-		&i.CarName,
-		&i.BorrowerName,
-		&i.GasolineRate,
-		&i.LpgRate,
-		&i.WearRate,
-		&i.ShareToken,
-	)
-	return i, err
-}
-
-const updateProfile = `-- name: UpdateProfile :one
-UPDATE user_settings
-SET car_name = $2, borrower_name = $3, updated_at = now()
-WHERE user_id = $1
-RETURNING user_id, car_name, borrower_name, gasoline_rate, lpg_rate, wear_rate, share_token
-`
-
-type UpdateProfileParams struct {
-	UserID       uuid.UUID
-	CarName      string
-	BorrowerName string
-}
-
-type UpdateProfileRow struct {
-	UserID       uuid.UUID
-	CarName      string
-	BorrowerName string
-	GasolineRate decimal.Decimal
-	LpgRate      decimal.Decimal
-	WearRate     decimal.Decimal
-	ShareToken   uuid.UUID
-}
-
-func (q *Queries) UpdateProfile(ctx context.Context, arg UpdateProfileParams) (UpdateProfileRow, error) {
-	row := q.db.QueryRow(ctx, updateProfile, arg.UserID, arg.CarName, arg.BorrowerName)
-	var i UpdateProfileRow
-	err := row.Scan(
-		&i.UserID,
-		&i.CarName,
-		&i.BorrowerName,
 		&i.GasolineRate,
 		&i.LpgRate,
 		&i.WearRate,
@@ -163,7 +113,7 @@ const updateRates = `-- name: UpdateRates :one
 UPDATE user_settings
 SET gasoline_rate = $2, lpg_rate = $3, wear_rate = $4, updated_at = now()
 WHERE user_id = $1
-RETURNING user_id, car_name, borrower_name, gasoline_rate, lpg_rate, wear_rate, share_token
+RETURNING user_id, gasoline_rate, lpg_rate, wear_rate, share_token
 `
 
 type UpdateRatesParams struct {
@@ -175,8 +125,6 @@ type UpdateRatesParams struct {
 
 type UpdateRatesRow struct {
 	UserID       uuid.UUID
-	CarName      string
-	BorrowerName string
 	GasolineRate decimal.Decimal
 	LpgRate      decimal.Decimal
 	WearRate     decimal.Decimal
@@ -193,8 +141,6 @@ func (q *Queries) UpdateRates(ctx context.Context, arg UpdateRatesParams) (Updat
 	var i UpdateRatesRow
 	err := row.Scan(
 		&i.UserID,
-		&i.CarName,
-		&i.BorrowerName,
 		&i.GasolineRate,
 		&i.LpgRate,
 		&i.WearRate,

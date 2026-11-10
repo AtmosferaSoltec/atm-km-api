@@ -53,7 +53,7 @@ sirve); contraseña de 8 a 128 caracteres, guardada con Argon2id.
 | POST | `/auth/login`, `/auth/refresh`, `/auth/logout` | sesión |
 | GET | `/me` | usuario actual |
 | GET | `/home` | auto prestado, pendiente, últimos 30 días, últimos viajes |
-| GET / PUT / POST | `/settings`, `/settings/rates`, `/settings/profile`, `/settings/share-token` | tarifas, nombres, rotar enlace |
+| GET / PUT / POST | `/settings`, `/settings/rates`, `/settings/share-token` | tarifas, rotar enlace |
 | GET / POST | `/trips`, `/trips/open` | listar (paginado, `?status=`) / prestar |
 | GET / DELETE | `/trips/:id` | detalle / borrar (solo cancelados) |
 | POST | `/trips/:id/return`, `/cancel`, `/pay`, `/unpay`; `/trips/pay` | recibir, cancelar, cobrar |
