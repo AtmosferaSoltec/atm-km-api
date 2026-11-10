@@ -13,6 +13,17 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+const clearFuelLogPhoto = `-- name: ClearFuelLogPhoto :exec
+UPDATE fuel_logs
+SET photo_key = NULL, photo_content_type = NULL, photo_size_bytes = NULL, photo_created_at = NULL
+WHERE id = $1
+`
+
+func (q *Queries) ClearFuelLogPhoto(ctx context.Context, id uuid.UUID) error {
+	_, err := q.db.Exec(ctx, clearFuelLogPhoto, id)
+	return err
+}
+
 const costPerKmInputs = `-- name: CostPerKmInputs :one
 WITH ordered AS (
     SELECT odometer, amount,
@@ -78,8 +89,52 @@ func (q *Queries) DeleteFuelLog(ctx context.Context, arg DeleteFuelLogParams) (i
 	return result.RowsAffected(), nil
 }
 
+const expiredFuelPhotos = `-- name: ExpiredFuelPhotos :many
+SELECT id, user_id, date, odometer, fuel_type, amount, is_full, created_at, price_per_gallon, photo_key, photo_content_type, photo_size_bytes, photo_created_at FROM fuel_logs WHERE photo_key IS NOT NULL AND photo_created_at < $1 ORDER BY photo_created_at LIMIT $2
+`
+
+type ExpiredFuelPhotosParams struct {
+	PhotoCreatedAt *time.Time
+	Limit          int32
+}
+
+// Photos past their retention, oldest first.
+func (q *Queries) ExpiredFuelPhotos(ctx context.Context, arg ExpiredFuelPhotosParams) ([]FuelLog, error) {
+	rows, err := q.db.Query(ctx, expiredFuelPhotos, arg.PhotoCreatedAt, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []FuelLog
+	for rows.Next() {
+		var i FuelLog
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserID,
+			&i.Date,
+			&i.Odometer,
+			&i.FuelType,
+			&i.Amount,
+			&i.IsFull,
+			&i.CreatedAt,
+			&i.PricePerGallon,
+			&i.PhotoKey,
+			&i.PhotoContentType,
+			&i.PhotoSizeBytes,
+			&i.PhotoCreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const fuelLogsSince = `-- name: FuelLogsSince :many
-SELECT id, user_id, date, odometer, fuel_type, amount, is_full, created_at, price_per_gallon FROM fuel_logs
+SELECT id, user_id, date, odometer, fuel_type, amount, is_full, created_at, price_per_gallon, photo_key, photo_content_type, photo_size_bytes, photo_created_at FROM fuel_logs
 WHERE user_id = $1 AND date >= $2
 ORDER BY date DESC, created_at DESC
 `
@@ -108,6 +163,10 @@ func (q *Queries) FuelLogsSince(ctx context.Context, arg FuelLogsSinceParams) ([
 			&i.IsFull,
 			&i.CreatedAt,
 			&i.PricePerGallon,
+			&i.PhotoKey,
+			&i.PhotoContentType,
+			&i.PhotoSizeBytes,
+			&i.PhotoCreatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -117,6 +176,62 @@ func (q *Queries) FuelLogsSince(ctx context.Context, arg FuelLogsSinceParams) ([
 		return nil, err
 	}
 	return items, nil
+}
+
+const getFuelLog = `-- name: GetFuelLog :one
+SELECT id, user_id, date, odometer, fuel_type, amount, is_full, created_at, price_per_gallon, photo_key, photo_content_type, photo_size_bytes, photo_created_at FROM fuel_logs WHERE id = $1 AND user_id = $2
+`
+
+type GetFuelLogParams struct {
+	ID     uuid.UUID
+	UserID uuid.UUID
+}
+
+func (q *Queries) GetFuelLog(ctx context.Context, arg GetFuelLogParams) (FuelLog, error) {
+	row := q.db.QueryRow(ctx, getFuelLog, arg.ID, arg.UserID)
+	var i FuelLog
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.Date,
+		&i.Odometer,
+		&i.FuelType,
+		&i.Amount,
+		&i.IsFull,
+		&i.CreatedAt,
+		&i.PricePerGallon,
+		&i.PhotoKey,
+		&i.PhotoContentType,
+		&i.PhotoSizeBytes,
+		&i.PhotoCreatedAt,
+	)
+	return i, err
+}
+
+const getFuelLogByID = `-- name: GetFuelLogByID :one
+SELECT id, user_id, date, odometer, fuel_type, amount, is_full, created_at, price_per_gallon, photo_key, photo_content_type, photo_size_bytes, photo_created_at FROM fuel_logs WHERE id = $1
+`
+
+// Serves a photo to whoever holds its signed URL: the signature is the credential.
+func (q *Queries) GetFuelLogByID(ctx context.Context, id uuid.UUID) (FuelLog, error) {
+	row := q.db.QueryRow(ctx, getFuelLogByID, id)
+	var i FuelLog
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.Date,
+		&i.Odometer,
+		&i.FuelType,
+		&i.Amount,
+		&i.IsFull,
+		&i.CreatedAt,
+		&i.PricePerGallon,
+		&i.PhotoKey,
+		&i.PhotoContentType,
+		&i.PhotoSizeBytes,
+		&i.PhotoCreatedAt,
+	)
+	return i, err
 }
 
 const hasFuelLogsBefore = `-- name: HasFuelLogsBefore :one
@@ -168,7 +283,7 @@ func (q *Queries) InsertFuelLog(ctx context.Context, arg InsertFuelLogParams) er
 }
 
 const listFuelLogs = `-- name: ListFuelLogs :many
-SELECT id, user_id, date, odometer, fuel_type, amount, is_full, created_at, price_per_gallon FROM fuel_logs
+SELECT id, user_id, date, odometer, fuel_type, amount, is_full, created_at, price_per_gallon, photo_key, photo_content_type, photo_size_bytes, photo_created_at FROM fuel_logs
 WHERE user_id = $1
 ORDER BY date DESC, created_at DESC
 LIMIT $3 OFFSET $2
@@ -199,6 +314,10 @@ func (q *Queries) ListFuelLogs(ctx context.Context, arg ListFuelLogsParams) ([]F
 			&i.IsFull,
 			&i.CreatedAt,
 			&i.PricePerGallon,
+			&i.PhotoKey,
+			&i.PhotoContentType,
+			&i.PhotoSizeBytes,
+			&i.PhotoCreatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -210,6 +329,36 @@ func (q *Queries) ListFuelLogs(ctx context.Context, arg ListFuelLogsParams) ([]F
 	return items, nil
 }
 
+const lockFuelLog = `-- name: LockFuelLog :one
+SELECT id, user_id, date, odometer, fuel_type, amount, is_full, created_at, price_per_gallon, photo_key, photo_content_type, photo_size_bytes, photo_created_at FROM fuel_logs WHERE id = $1 AND user_id = $2 FOR UPDATE
+`
+
+type LockFuelLogParams struct {
+	ID     uuid.UUID
+	UserID uuid.UUID
+}
+
+func (q *Queries) LockFuelLog(ctx context.Context, arg LockFuelLogParams) (FuelLog, error) {
+	row := q.db.QueryRow(ctx, lockFuelLog, arg.ID, arg.UserID)
+	var i FuelLog
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.Date,
+		&i.Odometer,
+		&i.FuelType,
+		&i.Amount,
+		&i.IsFull,
+		&i.CreatedAt,
+		&i.PricePerGallon,
+		&i.PhotoKey,
+		&i.PhotoContentType,
+		&i.PhotoSizeBytes,
+		&i.PhotoCreatedAt,
+	)
+	return i, err
+}
+
 const maxFuelOdometer = `-- name: MaxFuelOdometer :one
 SELECT COALESCE(max(odometer), 0)::numeric FROM fuel_logs WHERE user_id = $1
 `
@@ -219,6 +368,33 @@ func (q *Queries) MaxFuelOdometer(ctx context.Context, userID uuid.UUID) (decima
 	var column_1 decimal.Decimal
 	err := row.Scan(&column_1)
 	return column_1, err
+}
+
+const setFuelLogPhoto = `-- name: SetFuelLogPhoto :exec
+UPDATE fuel_logs
+SET photo_key = $3, photo_content_type = $4, photo_size_bytes = $5, photo_created_at = $6
+WHERE id = $1 AND user_id = $2
+`
+
+type SetFuelLogPhotoParams struct {
+	ID               uuid.UUID
+	UserID           uuid.UUID
+	PhotoKey         *string
+	PhotoContentType *string
+	PhotoSizeBytes   *int32
+	PhotoCreatedAt   *time.Time
+}
+
+func (q *Queries) SetFuelLogPhoto(ctx context.Context, arg SetFuelLogPhotoParams) error {
+	_, err := q.db.Exec(ctx, setFuelLogPhoto,
+		arg.ID,
+		arg.UserID,
+		arg.PhotoKey,
+		arg.PhotoContentType,
+		arg.PhotoSizeBytes,
+		arg.PhotoCreatedAt,
+	)
+	return err
 }
 
 const spentSince = `-- name: SpentSince :one
@@ -235,4 +411,38 @@ func (q *Queries) SpentSince(ctx context.Context, arg SpentSinceParams) (decimal
 	var column_1 decimal.Decimal
 	err := row.Scan(&column_1)
 	return column_1, err
+}
+
+const updateFuelLog = `-- name: UpdateFuelLog :execrows
+UPDATE fuel_logs
+SET date = $3, odometer = $4, fuel_type = $5, amount = $6, is_full = $7, price_per_gallon = $8
+WHERE id = $1 AND user_id = $2
+`
+
+type UpdateFuelLogParams struct {
+	ID             uuid.UUID
+	UserID         uuid.UUID
+	Date           time.Time
+	Odometer       decimal.Decimal
+	FuelType       string
+	Amount         decimal.Decimal
+	IsFull         bool
+	PricePerGallon *decimal.Decimal
+}
+
+func (q *Queries) UpdateFuelLog(ctx context.Context, arg UpdateFuelLogParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updateFuelLog,
+		arg.ID,
+		arg.UserID,
+		arg.Date,
+		arg.Odometer,
+		arg.FuelType,
+		arg.Amount,
+		arg.IsFull,
+		arg.PricePerGallon,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }

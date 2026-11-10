@@ -40,6 +40,7 @@ type App struct {
 	Router   *gin.Engine
 	Identity *identity.Module
 	Trips    *trips.Module
+	Fuel     *fuel.Module
 }
 
 // Build wires every module on pool.
@@ -57,6 +58,7 @@ func Build(cfg config.Config, pool *pgxpool.Pool, log *slog.Logger, opts Options
 		LargeBodyRoutes: map[string]int64{
 			trips.PhotoUploadRoute:  trips.MaxPhotoBytes + 1<<10,
 			trips.VoucherPhotoRoute: trips.MaxPhotoBytes + 1<<10,
+			fuel.PhotoRoute:         fuel.MaxPhotoBytes + 1<<10,
 		},
 	})
 	if err != nil {
@@ -96,9 +98,12 @@ func Build(cfg config.Config, pool *pgxpool.Pool, log *slog.Logger, opts Options
 		PhotoRetention: cfg.Photos.Retention,
 	})
 	fuelModule := fuel.New(fuel.Deps{
-		Tx:       runner,
-		Clock:    opts.Clock,
-		Location: cfg.Location,
+		Tx:             runner,
+		Clock:          opts.Clock,
+		Location:       cfg.Location,
+		Files:          files,
+		Signer:         photostore.NewSigner(cfg.JWTAccessSecret),
+		PhotoRetention: cfg.Photos.Retention,
 		Charged: func(ctx context.Context, userID uuid.UUID, since time.Time) ([]fuel.MonthAmount, error) {
 			months, err := tripsModule.FuelChargedByMonth(ctx, userID, since)
 			out := make([]fuel.MonthAmount, len(months))
@@ -117,11 +122,11 @@ func Build(cfg config.Config, pool *pgxpool.Pool, log *slog.Logger, opts Options
 	identityModule.Routes(api, limited, protected)
 	settingsModule.Routes(protected)
 	tripsModule.Routes(api, protected)
-	fuelModule.Routes(protected)
+	fuelModule.Routes(api, protected)
 	homeModule.Routes(protected)
 	shareModule.Routes(api)
 
-	return &App{Router: router, Identity: identityModule, Trips: tripsModule}, nil
+	return &App{Router: router, Identity: identityModule, Trips: tripsModule, Fuel: fuelModule}, nil
 }
 
 // Housekeeping deletes photos past their retention and dead sessions: shortly
@@ -137,6 +142,9 @@ func (a *App) Housekeeping(ctx context.Context, log *slog.Logger, interval time.
 		}
 		if _, err := a.Trips.CleanupPhotos(ctx); err != nil {
 			log.Error("photo cleanup failed", "error", err)
+		}
+		if _, err := a.Fuel.CleanupPhotos(ctx); err != nil {
+			log.Error("fuel photo cleanup failed", "error", err)
 		}
 		if _, err := a.Identity.Prune(ctx); err != nil {
 			log.Error("session prune failed", "error", err)

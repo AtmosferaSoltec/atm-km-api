@@ -12,15 +12,19 @@ import (
 )
 
 type FuelLog struct {
-	ID             uuid.UUID
-	UserID         uuid.UUID
-	Date           time.Time
-	Odometer       decimal.Decimal
-	FuelType       string
-	Amount         decimal.Decimal
-	IsFull         bool
-	CreatedAt      time.Time
-	PricePerGallon *decimal.Decimal
+	ID               uuid.UUID
+	UserID           uuid.UUID
+	Date             time.Time
+	Odometer         decimal.Decimal
+	FuelType         string
+	Amount           decimal.Decimal
+	IsFull           bool
+	CreatedAt        time.Time
+	PricePerGallon   *decimal.Decimal
+	PhotoKey         *string
+	PhotoContentType *string
+	PhotoSizeBytes   *int32
+	PhotoCreatedAt   *time.Time
 }
 
 type RefreshToken struct {

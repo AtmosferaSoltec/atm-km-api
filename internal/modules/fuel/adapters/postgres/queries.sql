@@ -2,6 +2,35 @@
 INSERT INTO fuel_logs (id, user_id, date, odometer, fuel_type, amount, is_full, price_per_gallon, created_at)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9);
 
+-- name: GetFuelLog :one
+SELECT * FROM fuel_logs WHERE id = $1 AND user_id = $2;
+
+-- Serves a photo to whoever holds its signed URL: the signature is the credential.
+-- name: GetFuelLogByID :one
+SELECT * FROM fuel_logs WHERE id = $1;
+
+-- name: LockFuelLog :one
+SELECT * FROM fuel_logs WHERE id = $1 AND user_id = $2 FOR UPDATE;
+
+-- name: UpdateFuelLog :execrows
+UPDATE fuel_logs
+SET date = $3, odometer = $4, fuel_type = $5, amount = $6, is_full = $7, price_per_gallon = $8
+WHERE id = $1 AND user_id = $2;
+
+-- name: SetFuelLogPhoto :exec
+UPDATE fuel_logs
+SET photo_key = $3, photo_content_type = $4, photo_size_bytes = $5, photo_created_at = $6
+WHERE id = $1 AND user_id = $2;
+
+-- name: ClearFuelLogPhoto :exec
+UPDATE fuel_logs
+SET photo_key = NULL, photo_content_type = NULL, photo_size_bytes = NULL, photo_created_at = NULL
+WHERE id = $1;
+
+-- Photos past their retention, oldest first.
+-- name: ExpiredFuelPhotos :many
+SELECT * FROM fuel_logs WHERE photo_key IS NOT NULL AND photo_created_at < $1 ORDER BY photo_created_at LIMIT $2;
+
 -- name: DeleteFuelLog :execrows
 DELETE FROM fuel_logs WHERE id = $1 AND user_id = $2;
 

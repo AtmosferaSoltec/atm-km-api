@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 
+	"github.com/AtmosferaSoltec/atm-km-api/internal/integrations/photostore"
 	fuelhttp "github.com/AtmosferaSoltec/atm-km-api/internal/modules/fuel/adapters/http"
 	"github.com/AtmosferaSoltec/atm-km-api/internal/modules/fuel/adapters/postgres"
 	"github.com/AtmosferaSoltec/atm-km-api/internal/modules/fuel/app"
@@ -25,12 +26,21 @@ type MonthAmount = app.MonthAmount
 // ChargedProvider gives the fuel charged on trips per month.
 type ChargedProvider = app.ChargedProvider
 
+// MaxPhotoBytes is the largest receipt photo accepted.
+const MaxPhotoBytes = app.MaxPhotoBytes
+
+// PhotoRoute takes a receipt photo's raw bytes; main gives it a larger body limit.
+const PhotoRoute = fuelhttp.PhotoRoute
+
 // Deps are the module's dependencies.
 type Deps struct {
-	Tx       tx.Runner
-	Clock    clock.Clock
-	Location *time.Location
-	Charged  ChargedProvider
+	Tx             tx.Runner
+	Clock          clock.Clock
+	Location       *time.Location
+	Charged        ChargedProvider
+	Files          *photostore.Store
+	Signer         photostore.Signer
+	PhotoRetention time.Duration
 }
 
 // Module wires the module with its adapters.
@@ -42,13 +52,17 @@ type Module struct {
 // New creates the module.
 func New(deps Deps) *Module {
 	service := app.NewService(app.Deps{
-		Logs: postgres.NewRepository(deps.Tx), Charged: deps.Charged, Clock: deps.Clock, Location: deps.Location,
+		Logs: postgres.NewRepository(deps.Tx), Files: deps.Files, Tx: deps.Tx, Charged: deps.Charged,
+		Clock: deps.Clock, Location: deps.Location, PhotoRetention: deps.PhotoRetention,
 	})
-	return &Module{service: service, handler: fuelhttp.NewHandler(service)}
+	return &Module{service: service, handler: fuelhttp.NewHandler(service, deps.Signer, deps.Clock, deps.PhotoRetention)}
 }
 
 // Routes mounts the module's routes.
-func (m *Module) Routes(protected gin.IRoutes) { m.handler.Routes(protected) }
+func (m *Module) Routes(public, protected gin.IRoutes) { m.handler.Routes(public, protected) }
+
+// CleanupPhotos deletes receipt photos past their retention; it returns how many.
+func (m *Module) CleanupPhotos(ctx context.Context) (int, error) { return m.service.CleanupPhotos(ctx) }
 
 // SpentSince is what was spent on fuel since a date.
 func (m *Module) SpentSince(ctx context.Context, userID uuid.UUID, since time.Time) (decimal.Decimal, error) {

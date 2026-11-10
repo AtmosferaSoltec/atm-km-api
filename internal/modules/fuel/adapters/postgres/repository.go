@@ -4,9 +4,11 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/shopspring/decimal"
 
 	"github.com/AtmosferaSoltec/atm-km-api/internal/modules/fuel/adapters/postgres/sqlcgen"
@@ -36,6 +38,58 @@ func (r Repository) Insert(ctx context.Context, log domain.Log) error {
 		FuelType: string(log.FuelType), Amount: log.Amount, IsFull: log.IsFull,
 		PricePerGallon: log.PricePerGallon, CreatedAt: log.CreatedAt,
 	})
+}
+
+// Get finds one of the user's fill-ups.
+func (r Repository) Get(ctx context.Context, userID, id uuid.UUID) (domain.Log, error) {
+	return oneLog(r.q(ctx).GetFuelLog(ctx, sqlcgen.GetFuelLogParams{ID: id, UserID: userID}))
+}
+
+// Lock finds one of the user's fill-ups and locks it until the transaction ends.
+func (r Repository) Lock(ctx context.Context, userID, id uuid.UUID) (domain.Log, error) {
+	return oneLog(r.q(ctx).LockFuelLog(ctx, sqlcgen.LockFuelLogParams{ID: id, UserID: userID}))
+}
+
+// GetByID finds a fill-up without knowing whose it is.
+func (r Repository) GetByID(ctx context.Context, id uuid.UUID) (domain.Log, error) {
+	return oneLog(r.q(ctx).GetFuelLogByID(ctx, id))
+}
+
+// Update changes what the owner types in; the photo has its own methods.
+func (r Repository) Update(ctx context.Context, log domain.Log) error {
+	n, err := r.q(ctx).UpdateFuelLog(ctx, sqlcgen.UpdateFuelLogParams{
+		ID: log.ID, UserID: log.UserID, Date: log.Date, Odometer: log.Odometer,
+		FuelType: string(log.FuelType), Amount: log.Amount, IsFull: log.IsFull, PricePerGallon: log.PricePerGallon,
+	})
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
+}
+
+// SetPhoto stores the photo's metadata, or clears it with nil.
+func (r Repository) SetPhoto(ctx context.Context, userID, id uuid.UUID, photo *domain.Photo) error {
+	params := sqlcgen.SetFuelLogPhotoParams{ID: id, UserID: userID}
+	if photo != nil {
+		size := int32(photo.SizeBytes) //nolint:gosec // capped at MaxPhotoBytes
+		params.PhotoKey, params.PhotoContentType = &photo.StorageKey, &photo.ContentType
+		params.PhotoSizeBytes, params.PhotoCreatedAt = &size, &photo.CreatedAt
+	}
+	return r.q(ctx).SetFuelLogPhoto(ctx, params)
+}
+
+// ClearPhoto removes the photo's metadata.
+func (r Repository) ClearPhoto(ctx context.Context, id uuid.UUID) error {
+	return r.q(ctx).ClearFuelLogPhoto(ctx, id)
+}
+
+// ExpiredPhotos returns fill-ups whose photo is older than a moment.
+func (r Repository) ExpiredPhotos(ctx context.Context, before time.Time, limit int) ([]domain.Log, error) {
+	rows, err := r.q(ctx).ExpiredFuelPhotos(ctx, sqlcgen.ExpiredFuelPhotosParams{PhotoCreatedAt: &before, Limit: int32(limit)}) //nolint:gosec // small constant
+	return toLogs(rows), err
 }
 
 // Delete removes a fill-up.
@@ -91,14 +145,36 @@ func (r Repository) CostPerKm(ctx context.Context, userID uuid.UUID) (*decimal.D
 	return domain.CostPerKm(row.Logs, row.Spent, row.FirstOdometer, row.LastOdometer), nil
 }
 
+func oneLog(row sqlcgen.FuelLog, err error) (domain.Log, error) {
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Log{}, domain.ErrNotFound
+	}
+	if err != nil {
+		return domain.Log{}, err
+	}
+	return toLog(row), nil
+}
+
 func toLogs(rows []sqlcgen.FuelLog) []domain.Log {
 	logs := make([]domain.Log, len(rows))
 	for i, row := range rows {
-		logs[i] = domain.Log{
-			ID: row.ID, UserID: row.UserID, Date: row.Date, Odometer: row.Odometer,
-			FuelType: domain.FuelType(row.FuelType), Amount: row.Amount, IsFull: row.IsFull,
-			PricePerGallon: row.PricePerGallon, CreatedAt: row.CreatedAt,
-		}
+		logs[i] = toLog(row)
 	}
 	return logs
+}
+
+func toLog(row sqlcgen.FuelLog) domain.Log {
+	log := domain.Log{
+		ID: row.ID, UserID: row.UserID, Date: row.Date, Odometer: row.Odometer,
+		FuelType: domain.FuelType(row.FuelType), Amount: row.Amount, IsFull: row.IsFull,
+		PricePerGallon: row.PricePerGallon, CreatedAt: row.CreatedAt,
+	}
+	// The table's check guarantees the photo columns come all together.
+	if row.PhotoKey != nil && row.PhotoContentType != nil && row.PhotoSizeBytes != nil && row.PhotoCreatedAt != nil {
+		log.Photo = &domain.Photo{
+			StorageKey: *row.PhotoKey, ContentType: *row.PhotoContentType,
+			SizeBytes: int64(*row.PhotoSizeBytes), CreatedAt: *row.PhotoCreatedAt,
+		}
+	}
+	return log
 }

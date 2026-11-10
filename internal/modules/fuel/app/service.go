@@ -20,6 +20,18 @@ const MaxSummaryMonths = 36
 // Repository stores fuel logs. Every method is scoped to the user.
 type Repository interface {
 	Insert(ctx context.Context, log domain.Log) error
+	// Get, Lock and GetByID return domain.ErrNotFound. GetByID is for serving a
+	// photo whose signed URL was already checked.
+	Get(ctx context.Context, userID, id uuid.UUID) (domain.Log, error)
+	Lock(ctx context.Context, userID, id uuid.UUID) (domain.Log, error)
+	GetByID(ctx context.Context, id uuid.UUID) (domain.Log, error)
+	// Update rewrites what the owner types in (not the photo); domain.ErrNotFound if there is no such log.
+	Update(ctx context.Context, log domain.Log) error
+	// SetPhoto stores the photo's metadata; nil clears it.
+	SetPhoto(ctx context.Context, userID, id uuid.UUID, photo *domain.Photo) error
+	// ExpiredPhotos returns fill-ups whose photo is older than a moment.
+	ExpiredPhotos(ctx context.Context, before time.Time, limit int) ([]domain.Log, error)
+	ClearPhoto(ctx context.Context, id uuid.UUID) error
 	// Delete returns domain.ErrNotFound if the user has no such log.
 	Delete(ctx context.Context, userID, id uuid.UUID) error
 	List(ctx context.Context, userID uuid.UUID, limit, offset int) ([]domain.Log, int64, error)
@@ -41,10 +53,13 @@ type ChargedProvider func(ctx context.Context, userID uuid.UUID, since time.Time
 
 // Deps are what the service needs.
 type Deps struct {
-	Logs     Repository
-	Charged  ChargedProvider
-	Clock    clock.Clock
-	Location *time.Location
+	Logs           Repository
+	Files          Files
+	Tx             Transactor
+	Charged        ChargedProvider
+	Clock          clock.Clock
+	Location       *time.Location
+	PhotoRetention time.Duration
 }
 
 // Service holds the fuel log use cases.
@@ -70,8 +85,35 @@ type AddInput struct {
 
 // Add registers a fill-up.
 func (s *Service) Add(ctx context.Context, userID uuid.UUID, in AddInput) (domain.Log, error) {
+	log := domain.Log{ID: ids.New(), UserID: userID, CreatedAt: s.deps.Clock.Now()}
+	if err := s.fill(&log, in); err != nil {
+		return domain.Log{}, err
+	}
+	if err := s.deps.Logs.Insert(ctx, log); err != nil {
+		return domain.Log{}, err
+	}
+	return log, nil
+}
+
+// Update corrects a fill-up. Everything is sent again, as in Add; the photo is untouched.
+func (s *Service) Update(ctx context.Context, userID, id uuid.UUID, in AddInput) (domain.Log, error) {
+	log, err := s.deps.Logs.Get(ctx, userID, id)
+	if err != nil {
+		return domain.Log{}, err
+	}
+	if err := s.fill(&log, in); err != nil {
+		return domain.Log{}, err
+	}
+	if err := s.deps.Logs.Update(ctx, log); err != nil {
+		return domain.Log{}, err
+	}
+	return log, nil
+}
+
+// fill validates the input and copies it into the log.
+func (s *Service) fill(log *domain.Log, in AddInput) error {
 	var problems domain.ValidationError
-	log := domain.Log{ID: ids.New(), UserID: userID, IsFull: in.IsFull, CreatedAt: s.deps.Clock.Now()}
+	log.IsFull = in.IsFull
 	switch date, err := dates.Parse(in.Date); {
 	case in.Date == "":
 		problems.Add("date", domain.CodeRequired)
@@ -99,22 +141,31 @@ func (s *Service) Add(ctx context.Context, userID uuid.UUID, in AddInput) (domai
 		log.Amount = *in.Amount
 		domain.ValidateAmount(log.Amount, &problems)
 	}
+	log.PricePerGallon = in.PricePerGallon
 	if in.PricePerGallon != nil {
-		log.PricePerGallon = in.PricePerGallon
 		domain.ValidatePricePerGallon(*in.PricePerGallon, &problems)
 	}
-	if err := problems.OrNil(); err != nil {
-		return domain.Log{}, err
-	}
-	if err := s.deps.Logs.Insert(ctx, log); err != nil {
-		return domain.Log{}, err
-	}
-	return log, nil
+	return problems.OrNil()
 }
 
-// Delete removes a fill-up.
+// Delete removes a fill-up and its photo.
 func (s *Service) Delete(ctx context.Context, userID, id uuid.UUID) error {
-	return s.deps.Logs.Delete(ctx, userID, id)
+	var photo *domain.Photo
+	err := s.deps.Tx.InTx(ctx, func(ctx context.Context) error {
+		log, err := s.deps.Logs.Lock(ctx, userID, id)
+		if err != nil {
+			return err
+		}
+		photo = log.Photo
+		return s.deps.Logs.Delete(ctx, userID, id)
+	})
+	if err != nil {
+		return err
+	}
+	if photo != nil {
+		s.deleteFile(ctx, photo.StorageKey)
+	}
+	return nil
 }
 
 // Page is a page of fill-ups.

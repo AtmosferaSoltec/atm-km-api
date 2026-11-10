@@ -83,6 +83,7 @@ sql:
       - migrations/00001_identity_create_users_and_sessions.sql
       - migrations/00004_fuel_create_fuel_logs.sql
       - migrations/00005_fuel_add_price_per_gallon.sql
+      - migrations/00007_fuel_add_receipt_photo.sql
     queries: ../internal/modules/fuel/adapters/postgres/queries.sql
     gen:
       go:

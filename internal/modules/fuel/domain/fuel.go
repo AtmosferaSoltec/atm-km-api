@@ -40,6 +40,17 @@ var (
 // ErrNotFound: the user has no such log.
 var ErrNotFound = errors.New("fuel log not found")
 
+// ErrNoPhoto: the fill-up has no receipt photo (or it was already cleaned up).
+var ErrNoPhoto = errors.New("fuel log photo not found")
+
+// Photo is the receipt's photo metadata; the file lives in the photo store.
+type Photo struct {
+	StorageKey  string
+	ContentType string
+	SizeBytes   int64
+	CreatedAt   time.Time
+}
+
 // Log is one fill-up.
 type Log struct {
 	ID       uuid.UUID
@@ -51,7 +62,9 @@ type Log struct {
 	IsFull   bool
 	// PricePerGallon is what the station charged, if the owner noted it.
 	PricePerGallon *decimal.Decimal
-	CreatedAt      time.Time
+	// Photo is the optional receipt photo.
+	Photo     *Photo
+	CreatedAt time.Time
 }
 
 // Field codes the clients know how to show.
@@ -63,6 +76,8 @@ const (
 	CodeTooLarge    = "TOO_LARGE"
 	CodeTooPrecise  = "TOO_PRECISE"
 	CodeInFuture    = "IN_FUTURE"
+	CodeUnsupported = "UNSUPPORTED_TYPE"
+	CodeEmpty       = "EMPTY"
 )
 
 // FieldError is a field with a problem.

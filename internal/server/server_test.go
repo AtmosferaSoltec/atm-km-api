@@ -603,3 +603,68 @@ func countFiles(t *testing.T, dir string) int {
 	require.NoError(t, err)
 	return count
 }
+
+func TestFuelLogCanBeEditedAndTakeAReceiptPhoto(t *testing.T) {
+	e := newEnv(t)
+	username := e.newUser("fuelphoto")
+	access, _ := e.login(username)
+	other, _ := e.login(e.newUser("fuelother"))
+	jpeg := append([]byte{0xFF, 0xD8, 0xFF, 0xE0}, bytes.Repeat([]byte("x"), 500)...)
+
+	created := e.do("POST", "/api/v1/fuel-logs", access, map[string]any{"date": "2026-11-01", "odometer": 100, "fuel_type": "GASOLINE", "amount": "35"})
+	require.Equal(t, http.StatusCreated, created.Status)
+	id := created.data()["id"].(string)
+	assert.Nil(t, created.data()["photo"])
+
+	// Edit: add the price per gallon, fix the amount and the fuel.
+	edited := e.do("PUT", "/api/v1/fuel-logs/"+id, access, map[string]any{
+		"date": "2026-11-01", "odometer": 100, "fuel_type": "LPG", "amount": "40.50", "price_per_gallon": "5.80",
+	})
+	require.Equal(t, http.StatusOK, edited.Status, string(edited.Raw))
+	assert.Equal(t, "40.50", edited.data()["amount"])
+	assert.Equal(t, "LPG", edited.data()["fuel_type"])
+	assert.Equal(t, "5.80", edited.data()["price_per_gallon"])
+	assert.Equal(t, "VALIDATION_FAILED", e.do("PUT", "/api/v1/fuel-logs/"+id, access, map[string]any{"date": "2026-11-01", "odometer": 100, "fuel_type": "LPG", "amount": "0"}).errorCode())
+	assert.Equal(t, http.StatusNotFound, e.do("PUT", "/api/v1/fuel-logs/"+id, other, map[string]any{"date": "2026-11-01", "odometer": 100, "fuel_type": "LPG", "amount": "10"}).Status)
+
+	// Receipt photo: only the owner can set it, and it is served by its signed URL.
+	assert.Equal(t, http.StatusNotFound, e.do("PUT", "/api/v1/fuel-logs/"+id+"/photo", other, jpeg).Status)
+	assert.Equal(t, 0, countFiles(t, e.photoDir))
+	assert.Equal(t, "VALIDATION_FAILED", e.do("PUT", "/api/v1/fuel-logs/"+id+"/photo", access, []byte("nope")).errorCode())
+	uploaded := e.do("PUT", "/api/v1/fuel-logs/"+id+"/photo", access, jpeg)
+	require.Equal(t, http.StatusOK, uploaded.Status, string(uploaded.Raw))
+	url := uploaded.data()["photo"].(map[string]any)["url"].(string)
+	served := e.do("GET", url, "", nil)
+	require.Equal(t, http.StatusOK, served.Status)
+	assert.Equal(t, jpeg, served.Raw)
+	assert.Equal(t, http.StatusNotFound, e.do("GET", strings.Replace(url, "sig=", "sig=x", 1), "", nil).Status)
+
+	// Editing keeps the photo; replacing it leaves one file.
+	kept := e.do("PUT", "/api/v1/fuel-logs/"+id, access, map[string]any{"date": "2026-11-01", "odometer": 100, "fuel_type": "LPG", "amount": "41"})
+	assert.NotNil(t, kept.data()["photo"])
+	e.do("PUT", "/api/v1/fuel-logs/"+id+"/photo", access, jpeg)
+	assert.Equal(t, 1, countFiles(t, e.photoDir))
+
+	// Removing it keeps the fill-up; deleting the fill-up removes the file.
+	removed := e.do("DELETE", "/api/v1/fuel-logs/"+id+"/photo", access, nil)
+	require.Equal(t, http.StatusOK, removed.Status)
+	assert.Nil(t, removed.data()["photo"])
+	assert.Equal(t, 0, countFiles(t, e.photoDir))
+	assert.Equal(t, http.StatusNotFound, e.do("DELETE", "/api/v1/fuel-logs/"+id+"/photo", access, nil).Status)
+	e.do("PUT", "/api/v1/fuel-logs/"+id+"/photo", access, jpeg)
+	require.Equal(t, http.StatusNoContent, e.do("DELETE", "/api/v1/fuel-logs/"+id, access, nil).Status)
+	assert.Equal(t, 0, countFiles(t, e.photoDir))
+
+	// The cleanup clears photos past their retention but keeps the fill-up.
+	id = e.do("POST", "/api/v1/fuel-logs", access, map[string]any{"date": "2026-11-01", "odometer": 120, "fuel_type": "GASOLINE", "amount": "20"}).data()["id"].(string)
+	e.do("PUT", "/api/v1/fuel-logs/"+id+"/photo", access, jpeg)
+	e.clock.Advance(91 * 24 * time.Hour)
+	cleaned, err := e.app.Fuel.CleanupPhotos(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 1, cleaned)
+	assert.Equal(t, 0, countFiles(t, e.photoDir))
+	access, _ = e.login(username)
+	list := e.do("GET", "/api/v1/fuel-logs", access, nil).Body["data"].([]any)
+	require.Len(t, list, 1)
+	assert.Nil(t, list[0].(map[string]any)["photo"])
+}

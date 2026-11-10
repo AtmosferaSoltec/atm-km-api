@@ -59,7 +59,8 @@ sirve); contraseña de 8 a 128 caracteres, guardada con Argon2id.
 | POST | `/trips/:id/return`, `/cancel`, `/pay`, `/unpay`; `/trips/pay` | recibir, cancelar, cobrar |
 | PUT / DELETE | `/trips/:id/photos/:leg` (`start`, `end`) | foto del odómetro |
 | GET | `/photos/:id?exp&sig` | foto (URL firmada, sin sesión) |
-| GET / POST / DELETE | `/fuel-logs`, `/fuel-logs/:id` | cargas de combustible |
+| GET / POST / PUT / DELETE | `/fuel-logs`, `/fuel-logs/:id` | registros de combustible (PUT corrige uno) |
+| PUT / DELETE / GET | `/fuel-logs/:id/photo` | foto opcional del comprobante (GET con URL firmada) |
 | GET | `/fuel/summary?months=` | resumen mensual |
 | GET | `/share/:token` | página pública de quien pide el auto |
 

@@ -107,6 +107,12 @@ func cleanup() int {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
+	fuelPhotos, err := app.Fuel.CleanupPhotos(ctx)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	photos += fuelPhotos
 	sessions, err := app.Identity.Prune(ctx)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)

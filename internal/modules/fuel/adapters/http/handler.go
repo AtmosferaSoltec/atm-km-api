@@ -4,7 +4,10 @@ package http
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"time"
 
@@ -12,10 +15,12 @@ import (
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 
+	"github.com/AtmosferaSoltec/atm-km-api/internal/integrations/photostore"
 	"github.com/AtmosferaSoltec/atm-km-api/internal/modules/fuel/app"
 	"github.com/AtmosferaSoltec/atm-km-api/internal/modules/fuel/domain"
 	"github.com/AtmosferaSoltec/atm-km-api/internal/platform/apierror"
 	"github.com/AtmosferaSoltec/atm-km-api/internal/platform/auth"
+	"github.com/AtmosferaSoltec/atm-km-api/internal/platform/clock"
 	"github.com/AtmosferaSoltec/atm-km-api/internal/platform/dates"
 	"github.com/AtmosferaSoltec/atm-km-api/internal/platform/money"
 )
@@ -27,21 +32,43 @@ const (
 	defaultSummaryMonths = 6
 )
 
-var errLogNotFound = apierror.New(http.StatusNotFound, apierror.CodeNotFound, "Esta carga ya no existe.")
+// photoURLLifetime: long enough for a page left open, short enough that a
+// leaked URL stops working the same day. Expiry is rounded to the hour so the
+// URL (and the browser cache) stays the same for an hour.
+const photoURLLifetime = 12 * time.Hour
+
+// PhotoRoute is the receipt photo's route, relative to /api/v1: PUT takes raw
+// bytes (main gives it a larger body limit), DELETE removes it and a signed GET serves it.
+const PhotoRoute = "/fuel-logs/:id/photo"
+
+var (
+	errLogNotFound   = apierror.New(http.StatusNotFound, apierror.CodeNotFound, "Este registro ya no existe.")
+	errPhotoNotFound = apierror.New(http.StatusNotFound, apierror.CodeNotFound, "Esta foto ya no existe.")
+)
 
 // Handler serves the fuel routes.
 type Handler struct {
-	service *app.Service
+	service   *app.Service
+	signer    photostore.Signer
+	clock     clock.Clock
+	retention time.Duration
 }
 
-// NewHandler creates the handler.
-func NewHandler(service *app.Service) *Handler { return &Handler{service: service} }
+// NewHandler creates the handler. The signer, clock and retention are for the receipt photos' URLs.
+func NewHandler(service *app.Service, signer photostore.Signer, clock clock.Clock, retention time.Duration) *Handler {
+	return &Handler{service: service, signer: signer, clock: clock, retention: retention}
+}
 
-// Routes mounts the routes; all of them demand a token.
-func (h *Handler) Routes(protected gin.IRoutes) {
+// Routes mounts the routes. All demand a token but the photo itself, whose
+// signed URL is the credential (an <img> cannot send a header).
+func (h *Handler) Routes(public, protected gin.IRoutes) {
 	protected.GET("/fuel-logs", h.list)
 	protected.POST("/fuel-logs", h.add)
+	protected.PUT("/fuel-logs/:id", h.update)
 	protected.DELETE("/fuel-logs/:id", h.delete)
+	protected.PUT(PhotoRoute, h.setPhoto)
+	protected.DELETE(PhotoRoute, h.deletePhoto)
+	public.GET(PhotoRoute, h.servePhoto)
 	protected.GET("/fuel/summary", h.summary)
 }
 
@@ -63,8 +90,17 @@ type logResponse struct {
 	Amount   string      `json:"amount"`
 	IsFull   bool        `json:"is_full"`
 	// Null when the owner did not note it.
-	PricePerGallon *string   `json:"price_per_gallon"`
-	CreatedAt      time.Time `json:"created_at"`
+	PricePerGallon *string `json:"price_per_gallon"`
+	// Null without a receipt photo (or once the cleanup deleted it).
+	Photo     *photoResponse `json:"photo"`
+	CreatedAt time.Time      `json:"created_at"`
+}
+
+// photoResponse is a photo: a signed URL, when it was taken and when the cleanup deletes it.
+type photoResponse struct {
+	URL       string    `json:"url"`
+	TakenAt   time.Time `json:"taken_at"`
+	ExpiresAt time.Time `json:"expires_at"`
 }
 
 type monthResponse struct {
@@ -98,7 +134,7 @@ func (h *Handler) list(c *gin.Context) {
 		respondError(c, err)
 		return
 	}
-	apierror.Page(c, toLogs(result.Logs), apierror.Meta{Page: page, PageSize: pageSize, Total: result.Total})
+	apierror.Page(c, h.toLogs(result.Logs), apierror.Meta{Page: page, PageSize: pageSize, Total: result.Total})
 }
 
 func (h *Handler) add(c *gin.Context) {
@@ -118,7 +154,7 @@ func (h *Handler) add(c *gin.Context) {
 		respondError(c, err)
 		return
 	}
-	apierror.Created(c, toLog(log))
+	apierror.Created(c, h.toLog(log))
 }
 
 func (h *Handler) delete(c *gin.Context) {
@@ -156,7 +192,7 @@ func (h *Handler) summary(c *gin.Context) {
 	for i, month := range summary.Months {
 		out.Months[i] = monthResponse{
 			Month: month.Month.Format("2006-01"), Spent: money.Format(month.Spent),
-			Charged: money.Format(month.Charged), Logs: toLogs(month.Logs),
+			Charged: money.Format(month.Charged), Logs: h.toLogs(month.Logs),
 		}
 	}
 	if summary.CostPerKm != nil {
@@ -190,23 +226,124 @@ func respondError(c *gin.Context, err error) {
 		apierror.Respond(c, apierror.Validation(fields...))
 	case errors.Is(err, domain.ErrNotFound):
 		apierror.Respond(c, errLogNotFound)
+	case errors.Is(err, domain.ErrNoPhoto):
+		apierror.Respond(c, errPhotoNotFound)
 	default:
 		apierror.Respond(c, err)
 	}
 }
 
-func toLogs(logs []domain.Log) []logResponse {
+func (h *Handler) toLogs(logs []domain.Log) []logResponse {
 	out := make([]logResponse, len(logs))
 	for i, log := range logs {
-		out[i] = toLog(log)
+		out[i] = h.toLog(log)
 	}
 	return out
 }
 
-func toLog(log domain.Log) logResponse {
-	return logResponse{
+func (h *Handler) toLog(log domain.Log) logResponse {
+	out := logResponse{
 		ID: log.ID, Date: dates.Format(log.Date), Odometer: json.Number(log.Odometer.String()),
 		FuelType: string(log.FuelType), Amount: money.Format(log.Amount), IsFull: log.IsFull,
 		PricePerGallon: money.FormatOptional(log.PricePerGallon), CreatedAt: log.CreatedAt.UTC(),
 	}
+	if log.Photo != nil {
+		expires := h.clock.Now().Truncate(time.Hour).Add(photoURLLifetime + time.Hour)
+		signed := h.signer.Sign(log.ID.String(), expires)
+		query := url.Values{"exp": {fmt.Sprint(signed.Expires)}, "sig": {signed.Signature}}
+		out.Photo = &photoResponse{
+			URL:       "/api/v1/fuel-logs/" + log.ID.String() + "/photo?" + query.Encode(),
+			TakenAt:   log.Photo.CreatedAt.UTC(),
+			ExpiresAt: log.Photo.CreatedAt.Add(h.retention).UTC(),
+		}
+	}
+	return out
+}
+
+func (h *Handler) update(c *gin.Context) {
+	userID, ok := auth.UserID(c)
+	if !ok {
+		return
+	}
+	id, ok := logID(c)
+	if !ok {
+		return
+	}
+	var body addBody
+	if !apierror.BindJSON(c, &body) {
+		return
+	}
+	log, err := h.service.Update(c.Request.Context(), userID, id, app.AddInput{
+		Date: body.Date, Odometer: body.Odometer, FuelType: body.FuelType, Amount: body.Amount, IsFull: body.IsFull,
+		PricePerGallon: body.PricePerGallon,
+	})
+	if err != nil {
+		respondError(c, err)
+		return
+	}
+	apierror.OK(c, h.toLog(log))
+}
+
+func (h *Handler) setPhoto(c *gin.Context) {
+	h.withLog(c, func(userID, id uuid.UUID) (domain.Log, error) {
+		data, err := io.ReadAll(c.Request.Body)
+		if err != nil {
+			return domain.Log{}, err
+		}
+		return h.service.SetPhoto(c.Request.Context(), userID, id, data)
+	})
+}
+
+func (h *Handler) deletePhoto(c *gin.Context) {
+	h.withLog(c, func(userID, id uuid.UUID) (domain.Log, error) {
+		return h.service.DeletePhoto(c.Request.Context(), userID, id)
+	})
+}
+
+func (h *Handler) withLog(c *gin.Context, action func(userID, id uuid.UUID) (domain.Log, error)) {
+	userID, ok := auth.UserID(c)
+	if !ok {
+		return
+	}
+	id, ok := logID(c)
+	if !ok {
+		return
+	}
+	log, err := action(userID, id)
+	if err != nil {
+		respondError(c, err)
+		return
+	}
+	apierror.OK(c, h.toLog(log))
+}
+
+// servePhoto streams a photo whose URL signature is valid. A bad signature and
+// a missing photo answer the same: nothing to probe.
+func (h *Handler) servePhoto(c *gin.Context) {
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil || !h.signer.Valid(id.String(), c.Query("exp"), c.Query("sig"), h.clock.Now()) {
+		apierror.Respond(c, errPhotoNotFound)
+		return
+	}
+	photo, file, err := h.service.OpenPhoto(c.Request.Context(), id)
+	if err != nil {
+		respondError(c, err)
+		return
+	}
+	defer file.Close() //nolint:errcheck // read-only
+	expires, _ := strconv.ParseInt(c.Query("exp"), 10, 64)
+	maxAge := max(time.Until(time.Unix(expires, 0)), 0)
+	c.Header("Content-Type", photo.ContentType)
+	c.Header("Cache-Control", "private, max-age="+strconv.Itoa(int(maxAge.Seconds())))
+	c.Header("X-Content-Type-Options", "nosniff")
+	http.ServeContent(c.Writer, c.Request, "", photo.CreatedAt, file)
+}
+
+func logID(c *gin.Context) (uuid.UUID, bool) {
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		apierror.Respond(c, errLogNotFound)
+		return uuid.Nil, false
+	}
+	return id, true
 }
